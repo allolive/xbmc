@@ -9,6 +9,7 @@
 #pragma once
 
 #include "AMLFrameMetadata.h"
+#include "AMLHdr10PlusHook.h"
 #include "DVDVideoCodec.h"
 #include "DVDStreamInfo.h"
 #include "threads/CriticalSection.h"
@@ -104,6 +105,9 @@ protected:
   h264_sequence  *m_h264_sequence;
   double          m_h264_sequence_pts;
   bool            m_has_keyframe;
+  // owns the HDR10+ -> DV conversion for this stream; Amlogic-only, so it lives
+  // here rather than in the shared CBitstreamConverter
+  CAMLHdr10PlusHook m_h10p;
 
   CBitstreamParser *m_bitparser;
   CBitstreamConverter *m_bitstream;

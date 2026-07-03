@@ -265,10 +265,13 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
   bool dv_user_enabled(!settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
   bool user_convert_to_dv;
 
+  // a tone mapping choice wins; it can be set while Dolby Vision is disabled
   if (hdrType == StreamHdrType::HDR_TYPE_NONE)
-    user_convert_to_dv = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV);
+    user_convert_to_dv = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV) &&
+                         !settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);
   else
-    user_convert_to_dv = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV);
+    user_convert_to_dv = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV) &&
+                         !settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR);
 
   bool convert_to_dv = (!!aml_support_dolby_vision() &&
                         static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())

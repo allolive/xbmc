@@ -16,6 +16,7 @@
 #include "DVDClock.h"
 #include "DVDStreamInfo.h"
 #include "AMLCodec.h"
+#include "AMLHdr10PlusHook.h"
 #include "ServiceBroker.h"
 #include "utils/AMLUtils.h"
 #include "utils/HDRCapabilities.h"
@@ -119,6 +120,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   m_nalLengthSize = 0;
   m_streamMeta = {};
   m_stripHdr10Plus = false;
+  m_h10p = {};
   m_metadataSequencer.Reset();
 
   CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::Opening: codec {:d} profile:{:d} extra_size:{:d}", m_hints.codec, hints.profile, hints.extradata.GetSize());
@@ -431,6 +433,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
       if (m_hints.dovi.dv_profile > 0)
         m_streamMeta.flags.push_back("rpu-removed");
     }
+
+    m_h10p.Arm(m_hints, m_bitstream, caps, m_stripHdr10Plus);
   }
 
   if (m_hints.contentLightMetadata)
@@ -610,11 +614,14 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       if (!m_bitstream->CanStartDecode())
       {
         CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: waiting for keyframe (bitstream)", __FUNCTION__);
+        m_h10p.RollbackAu();
         m_pendingMeta = m_streamMeta;
         return true;
       }
       pData = m_bitstream->GetConvertBuffer();
       iSize = m_bitstream->GetConvertSize();
+
+      m_h10p.RewriteAu(pData, iSize);
       doviIsFEL = m_bitstream->GetDoviIsFEL();
       IsHdr10Plus = m_bitstream->GetIsHdrPlus();
       if (IsHdr10Plus && m_stripHdr10Plus &&
@@ -643,6 +650,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       if (packet.pts == DVD_NOPTS_VALUE)
         m_hints.ptsinvalid = true;
 
+      m_h10p.OnDecoderOpen(m_hints, m_videobuffer.hdrType, IsHdr10Plus, m_bitstream, m_stripHdr10Plus);
+
       m_processInfo.SetDoviIsFEL(doviIsFEL);
       m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
 
@@ -663,7 +672,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   if (!m_Codec)
     return true;
 
-  if (packet.pSideData && packet.iSideDataElems > 0)
+  const bool converting = m_h10p.ConvertedThisAu();
+  if (packet.pSideData && packet.iSideDataElems > 0 && !converting)
   {
     const AVPacketSideData* sideData = av_packet_side_data_get(static_cast<AVPacketSideData*>(packet.pSideData),
                                                                packet.iSideDataElems,
@@ -713,6 +723,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     KODI::MEMORY::AlignedFree(pDataBackup);
     m_packages.pop_front();
   }
+
+  if (!data_added && pData)
+    m_h10p.RollbackAu();
 
   return data_added;
 }
@@ -771,6 +784,8 @@ void CDVDVideoCodecAmlogic::Reset(void)
 {
   if (m_Codec)
     m_Codec->Reset();
+
+  m_h10p.OnFlush();
 
   while (!m_packages.empty())
   {
