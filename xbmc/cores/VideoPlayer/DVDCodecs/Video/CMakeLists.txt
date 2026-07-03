@@ -16,11 +16,17 @@ if(TARGET ${APP_NAME_LC}::AML)
   list(APPEND SOURCES AMLAudioTrim.cpp
                       AMLCodec.cpp
                       AMLGenlock.cpp
+                      AMLHdr10Plus.cpp
+                      AMLHdr10PlusToDv.cpp
+                      AMLHdr10PlusHook.cpp
                       AMLLatency.cpp
                       DVDVideoCodecAmlogic.cpp)
   list(APPEND HEADERS AMLAudioTrim.h
                       AMLCodec.h
                       AMLGenlock.h
+                      AMLHdr10Plus.h
+                      AMLHdr10PlusToDv.h
+                      AMLHdr10PlusHook.h
                       AMLLatency.h
                       DVDVideoCodecAmlogic.h)
 endif()
