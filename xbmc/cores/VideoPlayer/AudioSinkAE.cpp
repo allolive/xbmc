@@ -17,6 +17,7 @@
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <mutex>
 
 extern "C"
@@ -96,6 +97,8 @@ void CAudioSinkAE::Destroy(bool finish)
   m_syncError = 0.0;
   m_syncErrorRaw = 0.0;
   m_syncErrorRawValid = false;
+  m_syncErrorScale = 1.0;
+  m_syncErrorSaturated = false;
   m_syncErrorTime = 0;
 }
 
@@ -118,6 +121,10 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
       m_syncError = info.error / 1000 * DVD_TIME_BASE;
       m_syncErrorRaw = info.errorRaw / 1000 * DVD_TIME_BASE;
       m_syncErrorRawValid = info.errorRawValid;
+
+      m_syncErrorScale = info.errorScale;
+      m_syncErrorSaturated = info.errorSaturated;
+
       m_resampleRatio = info.rr;
     }
   }
@@ -127,6 +134,8 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
     m_syncError = 0.0;
     m_syncErrorRaw = 0.0;
     m_syncErrorRawValid = false;
+    m_syncErrorScale = 1.0;
+    m_syncErrorSaturated = false;
   }
 
   // Use wall-clock deadline independent of playback speed (fixes dimensional error
@@ -240,6 +249,8 @@ void CAudioSinkAE::Flush()
   m_syncError = 0.0;
   m_syncErrorRaw = 0.0;
   m_syncErrorRawValid = false;
+  m_syncErrorScale = 1.0;
+  m_syncErrorSaturated = false;
   m_syncErrorTime = 0;
 }
 
@@ -321,9 +332,12 @@ double CAudioSinkAE::GetSyncError()
 
 void CAudioSinkAE::SetSyncErrorCorrection(double correction)
 {
-  m_syncError += correction;
-  // The correction is real clock time, which is the domain the unscaled copy is
-  // already in, so it lands there unchanged.
+  // The correction is real clock time. The unscaled copy is already in that
+  // domain; the reported one is not, so it is booked at the engine's own scale.
+  // Both have to end up describing the same remaining error, or the next
+  // decision is taken against a figure that says the clock moved further than
+  // it did.
+  m_syncError += correction * m_syncErrorScale;
   m_syncErrorRaw += correction;
 }
 
