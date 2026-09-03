@@ -56,6 +56,27 @@ public:
   //! the pipeline is really doing, for reporting rather than correcting.
   double GetSyncErrorRaw() const { return m_syncErrorRaw; }
 
+  //! \brief Whether the sink is carrying a bitstream rather than samples.
+  bool IsPassthrough() const { return m_bPassthrough; }
+
+  //! \brief Whether a correction is still owed from the last resync.
+  //!
+  //! The engine declares a stream synchronised once its averaged error is inside
+  //! 30ms, and in passthrough it can only move audio in whole IEC frames - 20ms
+  //! for TrueHD - so it stops with a residue it has no way to remove. That
+  //! residue is then reported through the scaling, which puts it under the
+  //! threshold that would correct it, and there it stays. Measured after a
+  //! resume from stopped: 105.84ms left standing, reported as 47.6ms against a
+  //! 50ms threshold.
+  bool PeekSyncAcquisition() const { return m_syncErrorAcquire; }
+
+  //! \brief Spend it. Callers must only reach here once the clock has actually
+  //! moved: the clock is entitled to decline - it applies nothing at all between
+  //! -27ms and +20ms while the renderer is centring frames, and quantises to
+  //! whole frames above that - and a chance spent on a refusal is a chance not
+  //! taken.
+  void TakeSyncAcquisition() { m_syncErrorAcquire = false; }
+
   //! \brief Whether the reading hit the engine's own ceiling. A saturated value
   //! is a lower bound on the error, not a measurement of it, so nothing should
   //! be corrected by it - a seek can make the true figure seconds wide.
@@ -87,6 +108,8 @@ protected:
   bool m_syncErrorRawValid{false};
   double m_syncErrorScale{1.0}; //!< what the engine scaled the reported error by
   bool m_syncErrorSaturated{false}; //!< the reading hit the engine's ceiling
+  bool m_syncErrorAcquire{false};   //!< a correction is owed from the last resync
+  bool m_syncWasInSync{false};      //!< the engine's state at the previous packet
   unsigned int m_syncErrorTime;
   double m_resampleRatio = 0.0; // invalid
   CCriticalSection m_critSection;

@@ -99,6 +99,8 @@ void CAudioSinkAE::Destroy(bool finish)
   m_syncErrorRawValid = false;
   m_syncErrorScale = 1.0;
   m_syncErrorSaturated = false;
+  m_syncErrorAcquire = false;
+  m_syncWasInSync = false;
   m_syncErrorTime = 0;
 }
 
@@ -112,7 +114,16 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
     return 0;
 
   CAESyncInfo info = m_pAudioStream->GetSyncInfo();
-  if (info.state == CAESyncInfo::SYNC_INSYNC)
+  const bool inSync = info.state == CAESyncInfo::SYNC_INSYNC;
+
+  // The engine has just finished resynchronising, so the next measurement it
+  // publishes is the first that describes where the resync actually left the
+  // stream rather than where the engine was aiming.
+  if (inSync && !m_syncWasInSync)
+    m_syncErrorAcquire = true;
+  m_syncWasInSync = inSync;
+
+  if (inSync)
   {
     unsigned int newTime = info.errortime;
     if (newTime != m_syncErrorTime)
@@ -136,6 +147,7 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
     m_syncErrorRawValid = false;
     m_syncErrorScale = 1.0;
     m_syncErrorSaturated = false;
+    m_syncErrorAcquire = false;
   }
 
   // Use wall-clock deadline independent of playback speed (fixes dimensional error
@@ -251,6 +263,8 @@ void CAudioSinkAE::Flush()
   m_syncErrorRawValid = false;
   m_syncErrorScale = 1.0;
   m_syncErrorSaturated = false;
+  m_syncErrorAcquire = false;
+  m_syncWasInSync = false;
   m_syncErrorTime = 0;
 }
 
