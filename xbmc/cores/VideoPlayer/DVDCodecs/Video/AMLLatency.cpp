@@ -7,6 +7,8 @@
 
 #include "AMLLatency.h"
 
+#include "AMLAudioTrim.h"
+
 #include "cores/VideoPlayer/DVDClock.h"
 
 #include <algorithm>
@@ -95,6 +97,10 @@ void CAMLLatency::Forget()
   // further poll is guaranteed. The rest is the polling thread's.
   CAMLLatencyStore::GetInstance().Forget();
   m_forget.store(true, std::memory_order_relaxed);
+
+  // Now rather than on the polling thread: a level asked for by a decoder that
+  // has closed must not still be in the register for whatever plays next.
+  CAMLAudioTrim::GetInstance().Release();
 }
 
 void CAMLLatency::Rearm()

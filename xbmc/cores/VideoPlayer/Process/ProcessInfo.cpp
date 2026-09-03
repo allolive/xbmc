@@ -438,6 +438,13 @@ void CProcessInfo::ResetAudioCodecInfo()
   m_audioQueueDataLevel = 0;
   m_audioSyncError = DVD_NOPTS_VALUE;
 
+  // With the sync error, not left behind it. A reader that gates on this to
+  // decide whether it may act keeps acting on a figure that stopped being
+  // republished the moment the audio went away - the audio track switched off
+  // mid playback, or a stream whose audio ends before its video - and there is
+  // then no measurement left that could ever move it back.
+  m_audioPassthrough.store(false);
+
   if (m_dataCache)
   {
     m_dataCache->SetAudioDecoderName(m_audioDecoderName);
