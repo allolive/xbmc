@@ -648,13 +648,20 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
       CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: Open decoder: fps:{:d}/{:d}", __FUNCTION__, m_hints.fpsrate, m_hints.fpsscale);
       if (m_Codec && !m_Codec->OpenDecoder(m_hints, doviIsFEL))
+      {
         CLog::Log(LOGERROR, "CDVDVideoCodecAmlogic::{}: Failed to open Amlogic Codec", __FUNCTION__);
+        m_Codec->CloseDecoder();
+        m_Codec = nullptr;
+      }
 
       m_videoBufferPool = std::shared_ptr<CAMLVideoBufferPool>(new CAMLVideoBufferPool());
 
       m_opened = true;
     }
   }
+
+  if (!m_Codec)
+    return true;
 
   if (packet.pSideData && packet.iSideDataElems > 0)
   {
@@ -760,7 +767,8 @@ void CDVDVideoCodecAmlogic::DrainMetadataToClock()
 
 void CDVDVideoCodecAmlogic::Reset(void)
 {
-  m_Codec->Reset();
+  if (m_Codec)
+    m_Codec->Reset();
 
   while (!m_packages.empty())
   {
