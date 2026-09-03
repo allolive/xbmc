@@ -83,7 +83,13 @@ public:
   //! over. Arms the matcher and reports where the picture landed.
   //! \param audioSyncError where the audio leaving the sink sits against the
   //! same clock, from CProcessInfo, or DVD_NOPTS_VALUE when nothing measured it
-  void Update(CDVDClock& clock, uint64_t ptsUs, double fps, double audioSyncError);
+  //! \param clockSync whether the renderer is centring frames itself, which
+  //! changes what a clock correction does and is otherwise invisible in the log
+  void Update(CDVDClock& clock,
+              uint64_t ptsUs,
+              double fps,
+              double audioSyncError,
+              bool clockSync);
 
   //! \brief Re-arm the matcher. A seek moves which frame is on screen, not the
   //! path it travels, so the measured answer still stands.
@@ -132,6 +138,8 @@ private:
   uint64_t m_lastN{0};      //!< the answer standing
   uint64_t m_candidate{0};  //!< a lower one, not yet believed
   unsigned int m_agreed{0}; //!< how many times running it has turned up
+  bool m_settled{false};    //!< the answer is fixed until the next seek
+  bool m_clockSync{false};  //!< the regime, for the settled line. App thread only.
 
   //! \brief What the last poll read, so the report does not read it again.
   bool m_pollValid{false};
