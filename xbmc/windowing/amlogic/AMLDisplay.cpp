@@ -236,6 +236,7 @@ void CAMLDRMUtils::CleanAndClose()
 
   if (m_crtc)
   {
+    m_crtcId.store(0, std::memory_order_relaxed);
     drmModeFreeCrtc(m_crtc);
     m_crtc = nullptr;
   }
@@ -391,6 +392,8 @@ void CAMLDRMUtils::aml_init_drmDevice_display()
     CleanAndClose();
     throw std::runtime_error("failed to get crtc of drmDevice");
   }
+
+  m_crtcId.store(m_crtc->crtc_id, std::memory_order_relaxed);
 
   m_orig_crtc = static_cast<drmModeCrtcPtr>(malloc(sizeof(drmModeCrtc)));
   if (!m_orig_crtc)
@@ -572,6 +575,8 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
       aml_set_framebuffer_resolution(res.iWidth, res.iHeight, framebuffer_name);
       return false;
     }
+
+    m_crtcId.store(m_crtc->crtc_id, std::memory_order_relaxed);
   }
 
   int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
