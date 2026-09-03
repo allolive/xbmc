@@ -9123,6 +9123,42 @@ msgctxt "#14427"
 msgid "Player-Led"
 msgstr ""
 
+#. Setting to trim the audio clock so sound and picture stay aligned
+#: system/settings/settings.xml
+msgctxt "#14316"
+msgid "Audio passthrough A/V sync"
+msgstr ""
+
+#. Help text of setting with label #14316 "Audio passthrough A/V sync"
+#: system/settings/settings.xml
+msgctxt "#14317"
+msgid "Corrects a standing offset between sound and picture by gently trimming the audio clock. Stronger settings clear a large drift sooner, though never more accurately, and make no difference to small ones. Some receivers and DACs will not follow a shifted clock - if yours clicks, mutes or drops out, choose a lower strength or turn it off. Has no effect on PCM output."
+msgstr ""
+
+#. Option for setting #14316 "Audio passthrough A/V sync"
+#: system/settings/settings.xml
+msgctxt "#14318"
+msgid "Light"
+msgstr ""
+
+#. Option for setting #14316 "Audio passthrough A/V sync"
+#: system/settings/settings.xml
+msgctxt "#14319"
+msgid "Medium"
+msgstr ""
+
+#. Option for setting #14316 "Audio passthrough A/V sync"
+#: system/settings/settings.xml
+msgctxt "#14320"
+msgid "Strong"
+msgstr ""
+
+#. Group label for the CoreELEC passthrough audio settings
+#: system/settings/settings.xml
+msgctxt "#14321"
+msgid "Passthrough Audio"
+msgstr ""
+
 #: xbmc/music/MusicDatabase.cpp
 #: xbmc/video/VideoDatabase.cpp
 msgctxt "#15011"

@@ -91,6 +91,7 @@ std::optional<uint32_t> aml_displayed_pts_ticks();
 //! units, without the vblank term that only the frame loop can use. See
 //! CRenderManager::PrepareNextRender().
 double aml_render_display_latency(StreamHdrType hdrType, float audioDelay);
+double aml_render_chosen_offset(StreamHdrType hdrType, float audioDelay);
 
 //! \brief How many times the display shows each frame of a stream at fps.
 //! Zero if either rate is unknown, or if the content outruns the display.

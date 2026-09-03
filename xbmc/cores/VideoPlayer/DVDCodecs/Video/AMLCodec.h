@@ -110,6 +110,8 @@ private:
   //! Whether the audio was a bitstream last frame, so the trim is given back
   //! once on the way out rather than on every frame after it.
   bool             m_trimWasPassthrough{false};
+  double           m_lastAudioOffset{0.0};
+  bool             m_offsetStoodDown{false};
   //! Whether this took the system default vfm chain away, so the close puts back
   //! only what it actually took.
   bool             m_vfmMapOverridden{false};

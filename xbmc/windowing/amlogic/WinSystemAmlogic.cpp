@@ -40,6 +40,7 @@
 #include "utils/log.h"
 #include "threads/SingleLock.h"
 
+#include "cores/VideoPlayer/DVDCodecs/Video/AMLAudioTrim.h"
 #include "platform/linux/SysfsPath.h"
 
 #include <linux/fb.h>
@@ -492,6 +493,13 @@ void CWinSystemAmlogic::RefreshDisplayCapabilities()
   setting = settings->GetSetting(CSettings::SETTING_VIDEOPLAYER_DOVIZEROLEVEL5);
   if (setting)
     setting->SetVisible(sink_dv);
+
+  // The knob is a kernel module parameter that not every SoC's clock driver
+  // carries. Without it the loop stands down, so the setting would sit there
+  // offering a choice that changes nothing.
+  setting = settings->GetSetting(CSettings::SETTING_COREELEC_AMLOGIC_AUDIOLEAD);
+  if (setting)
+    setting->SetVisible(CAMLAudioTrim::Supported());
 
   if (IsHDRDisplay())
   {
