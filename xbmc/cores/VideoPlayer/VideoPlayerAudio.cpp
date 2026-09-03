@@ -562,18 +562,46 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   // The vsync adjust goes back on because the engine measured against a clock
   // that already had it (CAudioSinkAE::GetClock), and a reader comparing this
   // with the picture needs both against the same one.
-  m_processInfo.SetAudioSyncError(m_audioSink.HasSyncError()
-                                      ? m_audioSink.GetSyncErrorRaw() +
-                                            m_pClock->GetVsyncAdjust()
-                                      : DVD_NOPTS_VALUE);
+  // A saturated reading is withheld as well as refused: it is the clamp, not a
+  // measurement, and a reader that acted on it would be acting on the same
+  // figure the correction above declines to use.
+  m_processInfo.SetAudioSyncError(
+      (m_audioSink.HasSyncError() && !m_audioSink.IsSyncErrorSaturated())
+          ? m_audioSink.GetSyncErrorRaw() + m_pClock->GetVsyncAdjust()
+          : DVD_NOPTS_VALUE);
 
   if (m_synctype == SYNC_DISCON)
   {
     double syncerror = m_audioSink.GetSyncError();
 
+    // A saturated reading is a lower bound on the error, not a measurement of
+    // it, and both copies are clamped - so there is nothing here worth acting
+    // on in either domain. Waiting costs one interval; stepping the clock by a
+    // clamp costs whatever the clamp happens to be.
+    if (m_audioSink.HasSyncError() && m_audioSink.IsSyncErrorSaturated())
+      syncerror = 0.0;
+
     if (std::abs(syncerror) > DVD_MSEC_TO_TIME(m_disconAdjustTimeMs))
     {
-      double correction = m_pClock->ErrorAdjust(syncerror, "CVideoPlayerAudio::OutputPacket");
+      // Decided on the error the engine reports, but corrected by the one it
+      // measured. For TrueHD passthrough those are not the same number: the
+      // engine shrinks what it reports so a stream whose frames arrive unevenly
+      // does not provoke a correction every second, and that is a reasonable
+      // thing to do to a threshold. Using the same shrunken figure as the size
+      // of the step is not - the clock then moves a fraction of the way and
+      // stops, and what is left is by construction too small to try again.
+      // Measured at a title start: a 115ms offset answered with a 51.58ms step,
+      // leaving 63ms in place for the rest of the film.
+      // Never by a saturated reading. The engine clamps at 1s in sync and 5s out
+      // of it, and a seek that leaves the decoder reporting a stale timestamp
+      // makes the true error seconds wide - stepping the clock by the clamp
+      // would move it by that much on a number that is only a lower bound.
+      // The fallback is the reported error, which the guard above has zeroed.
+      const double actual = (m_audioSink.HasSyncError() &&
+                             !m_audioSink.IsSyncErrorSaturated())
+                                ? m_audioSink.GetSyncErrorRaw()
+                                : syncerror;
+      double correction = m_pClock->ErrorAdjust(actual, "CVideoPlayerAudio::OutputPacket");
       if (correction != 0)
       {
         m_audioSink.SetSyncErrorCorrection(-correction);
