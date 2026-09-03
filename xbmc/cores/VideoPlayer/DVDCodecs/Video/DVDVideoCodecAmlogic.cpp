@@ -733,8 +733,10 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
   const double latencyTweak = static_cast<double>(
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
           refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
-  const double videoDelay =
-      static_cast<double>(m_processInfo.GetVideoSettings().m_AudioDelay) * 1000.0;
+  // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so this
+  // and the renderer's own sum cannot differ by the truncation.
+  const double videoDelay = static_cast<double>(
+      static_cast<int>(m_processInfo.GetVideoSettings().m_AudioDelay * 1000.0f));
 
   return DVD_MSEC_TO_TIME(latencyTweak + static_cast<double>(gfx.GetDisplayLatency()) -
                           videoDelay -

@@ -9,6 +9,7 @@
 #include "RendererAML.h"
 
 #include "cores/VideoPlayer/DVDCodecs/Video/AMLCodec.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
@@ -180,6 +181,19 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
 {
   ManageRenderArea();
 
+  // This is the thread that schedules frames, and the one PrepareNextRender()
+  // runs on, so it reads the vblank phase live rather than from the cache.
+  auto* winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  winSystem->RegisterRenderThread();
+
+  // Every pass, not every frame: the refresh the driver puts a frame up on is
+  // only resolvable to the rate this is polled at. It must also stay ahead of
+  // the ReleaseFrame() below - the measurement arms with the refresh this saw,
+  // and is only safe while that cannot be later than the hand-over. Reversed,
+  // the count reads one low, and the lowest-wins rule in CAMLLatency has no way
+  // back from a low reading.
+  CAMLLatency::GetInstance().Poll();
+
   CAMLVideoBuffer *amli = dynamic_cast<CAMLVideoBuffer *>(m_buffers[index].videoBuffer);
   if(amli && amli->m_amlCodec)
   {
@@ -188,6 +202,9 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
     {
       amli->m_amlCodec->ReleaseFrame(amli->m_bufferIndex, m_prevVPts == DVD_NOPTS_VALUE);
       amli->m_amlCodec->SetVideoRect(m_sourceRect, m_destRect);
+      // Refreshes what the decode thread and the debug overlay read.
+      winSystem->SampleFrameLatency();
+      amli->m_amlCodec->LatencyTick(pts);
       amli->m_amlCodec = nullptr; //Mark frame as processed
       m_prevVPts = pts;
     }
