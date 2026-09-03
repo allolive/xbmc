@@ -56,6 +56,11 @@ public:
   //! the pipeline is really doing, for reporting rather than correcting.
   double GetSyncErrorRaw() const { return m_syncErrorRaw; }
 
+  //! \brief Whether the reading hit the engine's own ceiling. A saturated value
+  //! is a lower bound on the error, not a measurement of it, so nothing should
+  //! be corrected by it - a seek can make the true figure seconds wide.
+  bool IsSyncErrorSaturated() const { return m_syncErrorSaturated; }
+
   void SetSyncErrorCorrection(double correction);
 
   /*!
@@ -80,6 +85,8 @@ protected:
   double m_syncError;
   double m_syncErrorRaw{0.0};
   bool m_syncErrorRawValid{false};
+  double m_syncErrorScale{1.0}; //!< what the engine scaled the reported error by
+  bool m_syncErrorSaturated{false}; //!< the reading hit the engine's ceiling
   unsigned int m_syncErrorTime;
   double m_resampleRatio = 0.0; // invalid
   CCriticalSection m_critSection;
