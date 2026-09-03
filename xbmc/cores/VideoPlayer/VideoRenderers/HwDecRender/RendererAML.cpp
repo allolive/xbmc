@@ -205,6 +205,7 @@ void CRendererAML::RenderUpdate(int index, int index2, bool clear, unsigned int 
       // Refreshes what the decode thread and the debug overlay read.
       winSystem->SampleFrameLatency();
       amli->m_amlCodec->LatencyTick(pts);
+      amli->m_amlCodec->GenlockTick(pts);
       amli->m_amlCodec = nullptr; //Mark frame as processed
       m_prevVPts = pts;
     }
