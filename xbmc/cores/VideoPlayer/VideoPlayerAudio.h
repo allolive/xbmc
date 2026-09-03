@@ -106,6 +106,12 @@ protected:
   XbmcThreads::EndTime<> m_syncTimer;
 
   int m_synctype;
+  double m_acquireSince{0.0};  //!< when the chance was armed, for the time bound
+  double m_rawPrev{0.0};      //!< the last unscaled reading, to see it stop moving
+  bool m_haveRawPrev{false};
+  bool m_rawSettled{false};      //!< three readings running agreed
+  bool m_rawSettledPrev{false};  //!< the pair before this one agreed
+  unsigned int m_rawReadings{0}; //!< readings seen since the chance was armed
   int m_prevsynctype;
 
   bool   m_prevskipped;
