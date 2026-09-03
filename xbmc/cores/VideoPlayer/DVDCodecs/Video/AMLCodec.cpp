@@ -2607,6 +2607,7 @@ void CAMLCodec::CloseAmlVideo()
 void CAMLCodec::Reset()
 {
   CAMLLatency::GetInstance().Restart();
+  m_genlock.Restart();
 
   CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
 
@@ -2864,6 +2865,33 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
   CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps());
 }
 
+void CAMLCodec::GenlockTick(uint64_t omxPts)
+{
+  CDVDClock* clock = m_hints.pClock;
+  if (!m_opened || !clock || omxPts == DVD_NOPTS_VALUE)
+    return;
+
+  // Trick play and live streams have the player driving the clock, so there is
+  // no steady phase. IsPaused() as well as m_speed: a pause reaches the clock
+  // from the decode thread before the speed message reaches this one, and a
+  // display loss pauses the clock without sending one at all.
+  //
+  // Skip while the player slews the clock to refill its buffer too: ErrorAdjust
+  // declines a correction below 100ms while a speed adjust is running anyway.
+  //
+  // Each of these breaks the one rule the step detector rests on - that the
+  // clock and the reference it is derived from advance together - so the
+  // alignment is told to take a fresh reading rather than difference across the
+  // gap and read the whole of it as a step somebody made.
+  if (m_speed != DVD_PLAYSPEED_NORMAL || m_processInfo.IsRealtimeStream() || clock->IsPaused() ||
+      clock->GetSpeedAdjust() != 0.0)
+  {
+    m_genlock.Forget();
+    return;
+  }
+
+  m_genlock.Update(*clock, m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
+}
 
 int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
 {
@@ -3025,6 +3053,11 @@ void CAMLCodec::SetSpeed(int speed)
   if (m_speed == speed)
     return;
 
+  // Ahead of the tick's own guard, which a pause never reaches: no frame is
+  // presented while paused, so nothing would notice until the clock had already
+  // skipped the pause.
+  CAMLLatency::GetInstance().NoteClockDisturbed();
+  m_genlock.Restart();
 
   CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
 
