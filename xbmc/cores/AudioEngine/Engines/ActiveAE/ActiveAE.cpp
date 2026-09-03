@@ -1237,6 +1237,31 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
       m_currDevice.compare(dev.name) != 0 || m_settings.driver.compare(dev.driver) != 0)
   {
     FlushEngine();
+
+    // The sync error is playingPts measured against the delay those stats
+    // describe, so resetting them moves the quantity underneath the window that
+    // is averaging it. What is left is a mean over two different pipelines,
+    // reported as though it were one, and every consumer downstream believes it:
+    // the correction threshold, the one-shot correction after a resync, and the
+    // A/V figure reported to the player. Measured on a display mode change,
+    // which re-opens the sink here: the error had settled at +153ms while the
+    // mean still read +90ms, so the correction moved 90 and the remaining 63
+    // stood for the rest of the title, below every threshold that might have
+    // taken it out. Discarded rather than carried across.
+    for (auto& stream : m_streams)
+    {
+      // The window the machine would have chosen for the state the stream is
+      // actually in. Flush re-arms the deadline as well as clearing the sum, so
+      // a figure of its own here would override that choice - and before the
+      // stream is in sync the machine wants a tenth of a second, so a whole one
+      // would hold it in silence for the difference.
+      const auto interval = (stream->m_syncState != CAESyncInfo::AESyncState::SYNC_INSYNC)
+                                ? std::chrono::milliseconds(100)
+                                : stream->GetErrorInterval();
+      stream->m_syncError.Flush(interval);
+      stream->m_syncErrorRaw.Flush(interval);
+    }
+
     if (!InitSink())
       return;
     m_settings.driver = dev.driver;
@@ -1245,6 +1270,7 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
         requestedDefaultDevice || !IsSameDevice(m_openedDriver, m_openedDevice, dev);
     initSink = true;
     m_stats.Reset(m_sinkFormat.m_sampleRate, m_mode == MODE_PCM);
+
     m_sink.m_controlPort.SendOutMessage(CSinkControlProtocol::VOLUME, &m_volume, sizeof(float));
 
     if (m_sinkRequestFormat.m_dataFormat != AE_FMT_RAW)
