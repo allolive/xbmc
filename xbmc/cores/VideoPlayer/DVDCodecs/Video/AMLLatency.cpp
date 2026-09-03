@@ -35,6 +35,12 @@ constexpr uint64_t MAX_VBLANKS = 4;
 // A lower answer than the one standing has to be seen this many times running.
 constexpr unsigned int AGREE_BEFORE_PUBLISHING = 2;
 
+//! Readings that must agree before the answer is settled for the mode. Two was
+//! enough to reject a single stray count, but not to choose between two counts
+//! that both keep turning up - and which of those wins decides the schedule by a
+//! whole refresh, differently on each run.
+constexpr unsigned int AGREE_BEFORE_SETTLING = 8;
+
 // How often to report where the picture actually landed.
 constexpr double TIME_BETWEEN_REPORTS = 60.0 * DVD_TIME_BASE;
 
@@ -95,6 +101,7 @@ void CAMLLatency::Rearm()
 {
   m_candidate = 0;
   m_agreed = 0;
+  m_settled = false;
   m_armed = false;
   m_haveShown = false;
   m_pollValid = false;
@@ -425,12 +432,30 @@ void CAMLLatency::Poll()
           ++m_agreed;
         }
 
-        if ((m_lastN == 0 || n < m_lastN) && m_agreed >= AGREE_BEFORE_PUBLISHING)
+        // Settled once, then held until the next seek, which re-opens it. The
+        // published figure sets the renderer's schedule, so a count that keeps
+        // moving moves the picture by a whole refresh - and because only a lower
+        // count was ever accepted, which one a run ended up with depended on where
+        // the polling happened to fall when the title started. That is a whole
+        // frame between one playback and the next, for no reason the viewer sees.
+        if (!m_settled && (m_lastN == 0 || n < m_lastN) && m_agreed >= AGREE_BEFORE_PUBLISHING)
         {
           CAMLLatencyStore::GetInstance().Set(static_cast<float>(n * 1000.0 / rate));
           CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLLatency: pipeline {} refreshes, {:.1f}ms", n,
                     n * 1000.0 / rate);
           m_lastN = n;
+        }
+
+        if (!m_settled && m_lastN != 0 && n == m_lastN && m_agreed >= AGREE_BEFORE_SETTLING)
+        {
+          m_settled = true;
+          // Said out loud, and at INFO, because which regime is in force decides
+          // whether the clock is stepped by an error or by whole frames - and a
+          // run in the other regime is indistinguishable in the log from a run
+          // that simply did not repeat.
+          CLog::Log(LOGINFO,
+                    "CAMLLatency: pipeline settled at {} refreshes ({:.1f}ms), clock sync {}",
+                    n, n * 1000.0 / rate, m_clockSync ? "on" : "off");
         }
       }
       m_armed = false;
@@ -451,10 +476,18 @@ void CAMLLatency::Poll()
   m_haveShown = true;
 }
 
-void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps, double audioSyncError)
+void CAMLLatency::Update(
+    CDVDClock& clock, uint64_t ptsUs, double fps, double audioSyncError, bool clockSync)
 {
   if (!m_pollValid || m_period <= 0.0)
+  {
+    // Kept current even here, so that a regime change across a seek or a mode
+    // change is not read from a value taken before it.
+    m_clockSync = clockSync;
     return;
+  }
+
+  m_clockSync = clockSync;
 
   // Decided on every presented frame. Settled once per report instead, it would
   // spend the first minute of every file false - so the check would never run,
