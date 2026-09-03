@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "AMLGenlock.h"
 #include "DVDVideoCodec.h"
 #include "cores/VideoPlayer/DVDStreamInfo.h"
 #include "cores/IPlayer.h"
@@ -87,6 +88,7 @@ public:
   int           GetAmlDuration() const;
   int           ReleaseFrame(const uint32_t index, bool bDrop = false);
   void          LatencyTick(uint64_t omxPts);
+  void          GenlockTick(uint64_t omxPts);
 
   static int    PollFrame();
   static void   SetPollDevice(int device);
@@ -140,6 +142,7 @@ private:
   static int m_pollDevice;
   static double m_ttd;
   CProcessInfo &m_processInfo;
+  CAMLGenlock      m_genlock;
   int m_decoder_timeout;
   std::chrono::time_point<std::chrono::system_clock> m_tp_last_frame;
 
