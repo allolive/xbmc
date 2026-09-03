@@ -11,10 +11,14 @@
 #include <string.h>
 #include <float.h>
 #include <exception>
+#include <cmath>
+#include <optional>
 
 #include "ServiceBroker.h"
 #include "cores/RetroPlayer/process/amlogic/RPProcessInfoAmlogic.h"
 #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererOpenGLES.h"
+#include "cores/DataCacheCore.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/AMLLatency.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodecAmlogic.h"
 #include "cores/VideoPlayer/VideoRenderers/LinuxRendererGLES.h"
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/RendererAML.h"
@@ -32,6 +36,7 @@
 #include "settings/lib/SettingsManager.h"
 #include "guilib/DispResource.h"
 #include "utils/AMLUtils.h"
+#include "utils/StringUtils.h"
 #include "utils/log.h"
 #include "threads/SingleLock.h"
 
@@ -555,6 +560,121 @@ float CWinSystemAmlogic::GetGuiSdrPeakLuminance() const
 HDR_STATUS CWinSystemAmlogic::GetOSHDRStatus()
 {
   return (IsHDRDisplay() ? HDR_STATUS::HDR_ON : HDR_STATUS::HDR_UNSUPPORTED);
+}
+
+float CWinSystemAmlogic::GetDisplayLatency()
+{
+  return CAMLLatencyStore::GetInstance().Get();
+}
+
+void CWinSystemAmlogic::RegisterRenderThread()
+{
+  m_renderThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
+}
+
+float CWinSystemAmlogic::GetFrameLatencyAdjustment()
+{
+  // Read where it is used. PrepareNextRender() runs earlier in the pass than the
+  // renderer, so a value sampled there is a pass old: out by however long the
+  // pass takes, and wrapping a whole refresh when that approaches one, which
+  // costs a frame. Only the decode thread, which arrives through
+  // CDVDVideoCodecAmlogic::RenderDisplayLatency() and has no relationship to the
+  // vblank, is served the cached one rather than taking a DRM read of its own.
+  if (std::this_thread::get_id() == m_renderThread.load(std::memory_order_relaxed))
+    return SampleFrameLatency();
+
+  return m_frameLatencyMs.load(std::memory_order_relaxed);
+}
+
+float CWinSystemAmlogic::SampleFrameLatency()
+{
+  // Nothing steady to report. Zero is what the base class returns, so the
+  // renderer simply schedules without the term rather than with a stale one.
+  const auto stand_down = [this]() {
+    m_frameLatencyMs.store(0.0f, std::memory_order_relaxed);
+    m_vblankPhaseMs.store(0.0f, std::memory_order_relaxed);
+    return 0.0f;
+  };
+
+  const double rate = GetGfxContext().GetFPS();
+  if (rate <= 0.0)
+    return stand_down();
+
+  // Trick play and pause have the player driving the clock.
+  if (CServiceBroker::GetDataCacheCore().GetSpeed() != 1.0f)
+    return stand_down();
+
+  // Stand down while CRenderManager centres the frame itself, or this would add
+  // a second half period on top of its.
+  if (CServiceBroker::GetDataCacheCore().IsRenderClockSync())
+    return stand_down();
+
+  // Whole-number match only, so pulldown, where there is no fixed phase, is left
+  // alone. Compared with a tolerance: the two rates come from different sources
+  // and exact equality on a ratio of floats does not hold.
+  const double refreshes =
+      aml_refreshes_per_frame(rate, CServiceBroker::GetDataCacheCore().GetVideoFps());
+  if (refreshes <= 0.0 || std::abs(std::round(refreshes) - refreshes) > 0.0005)
+    return stand_down();
+
+  const double periodUs = 1000000.0 / rate;
+  const std::optional<double> sinceFrameStart = aml_since_frame_start_us(2.0 * periodUs);
+  if (!sinceFrameStart)
+    return stand_down();
+
+  // Time since the LAST vblank, which is what PrepareNextRender() subtracts from
+  // a clock read of its own - and it does not take that difference modulo the
+  // period, so the fold is what keeps it one. Inside the blanking interval the
+  // kernel extrapolates to the frame about to start, so the reading comes back a
+  // little negative and refers to the next vblank rather than the last; adding a
+  // period puts it back. A record a whole period stale still says where in the
+  // frame the display is, so fold that too rather than refuse it. Only a reading
+  // with nothing sensible left in it is turned away.
+  double phase = *sinceFrameStart;
+  if (phase >= periodUs)
+  {
+    // Said once, because there is no known mechanism for it: the kernel
+    // recomputes the vblank from the scanout position on every call, so it
+    // should not be able to lag a whole period. If this never appears the
+    // branch can go, and refusing the reading would then cost nothing.
+    if (!m_staleVblankSeen)
+    {
+      m_staleVblankSeen = true;
+      CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemAmlogic: vblank record a period stale ({:.2f}ms)",
+                *sinceFrameStart / 1000.0);
+    }
+    phase -= periodUs;
+  }
+  if (phase < 0.0)
+    phase += periodUs;
+
+  if (phase < 0.0 || phase >= periodUs)
+    return stand_down();
+
+  // Half a period of lead, so renderPts >= pts settles half a frame before the
+  // display switches rather than on the flip. Only while the display shows each
+  // frame once: with two or more refreshes per frame PrepareNextRender() already
+  // flips early on the vblanks with no frame due.
+  const double lead = std::round(refreshes) == 1.0 ? periodUs / 2.0 : 0.0;
+
+  const float adjustment = static_cast<float>((phase - lead) / 1000.0);
+  m_frameLatencyMs.store(adjustment, std::memory_order_relaxed);
+  m_vblankPhaseMs.store(static_cast<float>(phase / 1000.0), std::memory_order_relaxed);
+
+  return adjustment;
+}
+
+DEBUG_INFO_RENDER CWinSystemAmlogic::GetDebugInfo()
+{
+  const float pipeline = CAMLLatencyStore::GetInstance().Get();
+
+  DEBUG_INFO_RENDER info;
+  info.videoOutput = StringUtils::Format(
+      "AML pipeline: {} | align: {:+.2f}ms | vblank phase: {:+.2f}ms",
+      pipeline < 0.0f ? std::string("measuring") : StringUtils::Format("{:.1f}ms", pipeline),
+      CAMLLatencyStore::GetInstance().GetAlignment(),
+      m_vblankPhaseMs.load(std::memory_order_relaxed));
+  return info;
 }
 
 void CWinSystemAmlogic::Register(IDispResource *resource)

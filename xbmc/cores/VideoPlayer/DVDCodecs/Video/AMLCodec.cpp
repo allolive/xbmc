@@ -8,6 +8,8 @@
 
 
 #include "AMLCodec.h"
+
+#include "AMLLatency.h"
 #include "DynamicDll.h"
 
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
@@ -2394,6 +2396,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
   CSysfsPath("/sys/class/video/freerun_mode", 1);
 
   m_opened = true;
+
   // vcodec is open, update speed if it was
   // changed before VideoPlayer called OpenDecoder.
   SetSpeed(m_speed);
@@ -2531,6 +2534,11 @@ void CAMLCodec::CloseDecoder()
   dumpfile_close(am_private);
   m_opened = false;
 
+  // After m_opened, so a frame still queued in the renderer cannot tick this
+  // back to life: the measured path belongs to this decoder, and whatever plays
+  // next may not use this renderer at all.
+  CAMLLatency::GetInstance().Forget();
+
   am_packet_release(&am_private->am_pkt);
   am_private->extradata = {};
   free(am_private->hdr_buf.data);
@@ -2609,6 +2617,8 @@ void CAMLCodec::CloseAmlVideo()
 
 void CAMLCodec::Reset()
 {
+  CAMLLatency::GetInstance().Restart();
+
   CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
 
   if (!m_opened)
@@ -2844,6 +2854,28 @@ void CAMLCodec::SetPollDevice(int dev)
   m_pollDevice = dev;
 }
 
+void CAMLCodec::LatencyTick(uint64_t omxPts)
+{
+  CDVDClock* clock = m_hints.pClock;
+
+  if (!m_opened || !clock || omxPts == DVD_NOPTS_VALUE)
+    return;
+
+  // Trick play and a slewed clock have no steady relationship to measure
+  // against, and a paused clock has none at all. Each of them also moves the
+  // clock by more than any drift will, so the drift baseline goes with them
+  // rather than counting a pause as a minute of the audio running slow.
+  if (m_speed != DVD_PLAYSPEED_NORMAL || m_processInfo.IsRealtimeStream() || clock->IsPaused() ||
+      clock->GetSpeedAdjust() != 0.0)
+  {
+    CAMLLatency::GetInstance().NoteClockDisturbed();
+    return;
+  }
+
+  CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps());
+}
+
+
 int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
 {
   int ret;
@@ -2988,6 +3020,7 @@ void CAMLCodec::SetSpeed(int speed)
 {
   if (m_speed == speed)
     return;
+
 
   CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
 
