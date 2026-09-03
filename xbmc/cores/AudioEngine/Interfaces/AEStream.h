@@ -55,6 +55,16 @@ public:
   //! \brief Whether \ref errorRaw came from a window that held any samples.
   //! An empty window averages to zero and is stamped like any other.
   bool errorRawValid{false};
+
+  //! \brief What the engine multiplied \ref error by. Stated rather than left to
+  //! be inferred from the pair: both are moved by corrections afterwards, so
+  //! their ratio stops being the scale almost immediately.
+  double errorScale{1.0};
+
+  //! \brief Whether the measurement hit the engine's own ceiling. A saturated
+  //! reading is a lower bound, not a measurement, and nothing should be
+  //! corrected by it.
+  bool errorSaturated{false};
 };
 
 /**

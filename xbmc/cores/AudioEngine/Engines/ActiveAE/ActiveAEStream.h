@@ -272,6 +272,8 @@ protected:
   //! pipeline really has. Fed and flushed in step with \ref m_syncError so the
   //! two always describe the same window.
   CSyncError m_syncErrorRaw;
+  double m_errorScale{1.0};
+  bool m_errorSaturated{false};
   double m_lastSyncError;
   CAESyncInfo::AESyncState m_syncState;
 };

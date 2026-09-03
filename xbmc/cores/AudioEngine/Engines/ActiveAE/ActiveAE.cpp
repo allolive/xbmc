@@ -152,6 +152,8 @@ void CEngineStats::UpdateStream(CActiveAEStream *stream)
       unsigned int rawTime;
       str.m_syncErrorRaw = stream->m_syncErrorRaw.GetLastError(rawTime);
       str.m_syncErrorRawValid = stream->m_syncErrorRaw.LastErrorValid();
+      str.m_syncErrorScale = stream->m_errorScale;
+      str.m_syncErrorSaturated = stream->m_errorSaturated;
       if (stream->m_processingBuffers)
       {
         str.m_resampleRatio = stream->m_processingBuffers->GetRR();
@@ -227,6 +229,8 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
       info.error = str.m_syncError;
       info.errorRaw = str.m_syncErrorRaw;
       info.errorRawValid = str.m_syncErrorRawValid;
+      info.errorScale = str.m_syncErrorScale;
+      info.errorSaturated = str.m_syncErrorSaturated;
       info.errortime = str.m_errorTime;
       info.state = str.m_syncState;
       info.rr = str.m_resampleRatio;
@@ -2116,12 +2120,24 @@ bool CActiveAE::RunStages()
         // Kept before the scaling and clamped on its own, so a report reading it
         // gets what the pipeline is doing rather than what the sync loop was
         // asked to believe. Never read back here.
+        const double errorMeasured = error;
         double errorRaw = std::clamp(error, -maxError, maxError);
 
         // underestimate error for TrueHD passthrough
         // oscillations should be less than frametime 40ms to avoid unnecessary a/v sync corrections
         if (isTrueHDPassthrough)
           error *= TRUEHD_SYNC_ERROR_SCALE;
+
+        // Stated here, where it is applied. Inferring it later from error/errorRaw
+        // does not work: corrections move both afterwards, and past the clamp the
+        // pair stops reading the scale at all.
+        (*it)->m_errorScale = isTrueHDPassthrough ? TRUEHD_SYNC_ERROR_SCALE : 1.0;
+
+        // Judged on the measurement, before either the scaling or the clamp.
+        // Tested afterwards it would only trip past maxError/scale, leaving a
+        // window where the value has been clamped but is not reported as such -
+        // and a clamp is a lower bound, not a measurement.
+        (*it)->m_errorSaturated = std::abs(errorMeasured) >= maxError;
 
         if (error > maxError)
         {
