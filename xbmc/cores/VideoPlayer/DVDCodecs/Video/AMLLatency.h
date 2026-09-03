@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <optional>
 
 class CDVDClock;
 
@@ -90,6 +91,21 @@ public:
               double fps,
               double audioSyncError,
               bool clockSync);
+
+  //! \brief How far the audio leads the picture at the box output, smoothed,
+  //! or nullopt before enough of it has been seen.
+  //!
+  //! The sum of the two halves the report prints separately. Worth having on its
+  //! own because it is the only figure here a clock correction cannot move: a
+  //! step of d shifts the alignment by +d and the audio error by -d, so it falls
+  //! out of the sum. What is left is the part no amount of stepping the clock
+  //! will fix, and so the part the audio rate has to walk out.
+  std::optional<double> Lead() const
+  {
+    if (!m_haveLead)
+      return std::nullopt;
+    return m_leadFilt;
+  }
 
   //! \brief Re-arm the matcher. A seek moves which frame is on screen, not the
   //! path it travels, so the measured answer still stands.
@@ -177,6 +193,11 @@ private:
   double m_driftPrevAbsolute{0.0};  //!< the previous report, to catch a step
   double m_driftPrevClock{0.0};
   double m_lastAlign{0.0};   //!< the newest sample, not the window mean
+
+  double m_leadFilt{0.0};    //!< audio ahead of picture, smoothed over LEAD_TAU
+  double m_leadOdd{0.0};     //!< how long the figure has disagreed with the filter
+  double m_leadAt{0.0};      //!< when that was last advanced
+  bool m_haveLead{false};
   double m_driftAlign{0.0};  //!< the same at the previous report
   double m_driftWalkUs{0.0};
   int m_driftFrames{0};  //!< refreshes swallowed, the walk's own check

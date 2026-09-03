@@ -46,6 +46,22 @@ constexpr unsigned int AGREE_BEFORE_SETTLING = 8;
 // How often to report where the picture actually landed.
 constexpr double TIME_BETWEEN_REPORTS = 60.0 * DVD_TIME_BASE;
 
+//! How long the lead filter remembers. The reading behind it only moves about
+//! once a second, and what reads it decides every fifteen, so this is short
+//! enough to be current at that cadence and long enough to hand it a number
+//! rather than the last sample.
+constexpr double LEAD_TAU = 5.0 * DVD_TIME_BASE;
+
+//! A step this big is not the loop moving the figure - at the most it may ever
+//! ask for, it moves it a hundred times slower than this per sample. Set below a
+//! refresh period so a swallowed one is caught, and well above the ripple.
+constexpr double LEAD_JUMP = DVD_MSEC_TO_TIME(8.0);
+
+//! How long a disagreement is waited out before the new value is believed. Over
+//! the second or so a clock correction takes to cancel in this sum, and under
+//! anything the offset loop is trying to do.
+constexpr double LEAD_RESEAT = 3.0 * DVD_TIME_BASE;
+
 // Opening a file drops frames on purpose to catch up with the clock, so the
 // check stands down until the picture has run clean for about this long. Given
 // in seconds and turned into refreshes, so it means the same at 24Hz and at 60.
@@ -116,6 +132,8 @@ void CAMLLatency::Rearm()
   m_audioReports = 0;
   m_audioSum = 0.0;
   m_leadSum = 0.0;
+  m_haveLead = false;
+  m_leadOdd = 0.0;
   m_cadenceSeq = 0;
   m_ratioIsOne = false;
   m_classArmed = false;
@@ -613,8 +631,59 @@ void CAMLLatency::Update(
         m_audioMax = std::max(m_audioMax, audioSyncError);
       }
       m_audioSum += audioSyncError;
-      m_leadSum += audioSyncError + alignment;
       ++m_audioReports;
+
+      // The same figure the report averages, kept as well on a short filter for
+      // the audio rate loop, which needs it far sooner than once a minute and
+      // wants it smoothed rather than summed. Not guarded against a clock step:
+      // a step cancels in this sum by construction, so unlike either half of it
+      // there is nothing here for a guard to catch.
+      const double lead = audioSyncError + alignment;
+      m_leadSum += lead;
+
+      if (!m_haveLead)
+      {
+        m_leadFilt = lead;
+        m_haveLead = true;
+        m_leadOdd = 0.0;
+      }
+      else
+      {
+        const double dt = absolute - m_leadAt;
+
+        // Two things step this sum without the audio having moved against the
+        // picture at all: the pipeline swallowing a refresh, which shifts the
+        // alignment by a whole period, and a clock correction, whose two halves
+        // cancel here only once the audio side has caught up - it is republished
+        // about once a second, while the alignment side is read live.
+        //
+        // Both are discontinuities, so that is what is tested for. Explicitly
+        // NOT "has the figure moved": moving it is the whole point, and a filter
+        // gated on stillness holds the loop off exactly while it is working,
+        // which was measured doing precisely that - the aim switching on and off
+        // and the rate chattering between its limit and nothing.
+        //
+        // A rejected sample is held rather than dropped for good. A genlock step
+        // heals itself within an interval, so waiting it out is right; a
+        // swallowed refresh does not, so once the disagreement has stood for
+        // longer than that the new value is taken as the truth and seated.
+        if (std::abs(lead - m_leadFilt) > LEAD_JUMP)
+        {
+          m_leadOdd += dt;
+          if (m_leadOdd > LEAD_RESEAT)
+          {
+            m_leadFilt = lead;
+            m_leadOdd = 0.0;
+          }
+        }
+        else
+        {
+          m_leadOdd = 0.0;
+          const double a = (dt <= 0.0) ? 1.0 : 1.0 - std::exp(-dt / LEAD_TAU);
+          m_leadFilt += a * (lead - m_leadFilt);
+        }
+      }
+      m_leadAt = absolute;
     }
 
     if (absolute - m_since >= TIME_BETWEEN_REPORTS)
