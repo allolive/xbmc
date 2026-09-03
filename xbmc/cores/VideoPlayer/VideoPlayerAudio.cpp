@@ -163,6 +163,10 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
   // shut down the adio_decode thread and wait for it
   StopThread(); // will set this->m_bStop to true
 
+  // After the thread that publishes it has been joined, not before: the drain
+  // above runs OutputPacket, which would put a live value back.
+  m_processInfo.SetAudioSyncError(DVD_NOPTS_VALUE);
+
   // destroy audio device
   CLog::Log(LOGINFO, "Closing audio device");
   if (bWait)
@@ -310,6 +314,10 @@ void CVideoPlayerAudio::Process()
         {
           CLog::Log(LOGINFO, "CVideoPlayerAudio::Process - stream stalled");
           m_stalled = true;
+    // Nothing will publish again until packets flow, and the reporter
+    // samples every frame: left standing, one stale reading is counted
+    // once per frame for as long as the audio is gone.
+    m_processInfo.SetAudioSyncError(DVD_NOPTS_VALUE);
         }
       }
       if (timeout == 0ms)
@@ -352,6 +360,10 @@ void CVideoPlayerAudio::Process()
       m_audioClock = 0;
       audioframe.nb_frames = 0;
       m_syncState = IDVDStreamPlayer::SYNC_STARTING;
+      // Nothing will publish again until packets flow, and the reporter
+      // samples every frame: left standing, one stale reading is counted
+      // once per frame for as long as the audio is gone.
+      m_processInfo.SetAudioSyncError(DVD_NOPTS_VALUE);
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))
     {
@@ -360,6 +372,10 @@ void CVideoPlayerAudio::Process()
       m_stalled = true;
       m_audioClock = 0;
       audioframe.nb_frames = 0;
+      // Nothing will publish again until packets flow, and the reporter
+      // samples every frame: left standing, one stale reading is counted
+      // once per frame for as long as the audio is gone.
+      m_processInfo.SetAudioSyncError(DVD_NOPTS_VALUE);
 
       if (sync)
       {
@@ -540,6 +556,16 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     audioframe.centerMixLevel = pow(10, (curDB + m_processInfo.GetVideoSettings().m_CenterMixLevel) / 20);
     audioframe.hasDownmix = true;
   }
+
+  // Published for every sync type - the engine measures the error in resample
+  // mode too, it is just corrected differently. It is read back and acted on.
+  // The vsync adjust goes back on because the engine measured against a clock
+  // that already had it (CAudioSinkAE::GetClock), and a reader comparing this
+  // with the picture needs both against the same one.
+  m_processInfo.SetAudioSyncError(m_audioSink.HasSyncError()
+                                      ? m_audioSink.GetSyncErrorRaw() +
+                                            m_pClock->GetVsyncAdjust()
+                                      : DVD_NOPTS_VALUE);
 
   if (m_synctype == SYNC_DISCON)
   {

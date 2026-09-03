@@ -46,6 +46,16 @@ public:
   double GetMaxDelay(); // returns total time of audio in AE for the stream
   double GetDelay(); // returns the time it takes to play a packet if we add one at this time
   double GetSyncError();
+
+  //! \brief Whether there is a measurement at all. GetSyncError() reads zero
+  //! both when the audio is exactly on the clock and when the engine has not
+  //! measured it yet, and those are not the same answer.
+  bool HasSyncError() const { return m_syncErrorTime != 0 && m_syncErrorRawValid; }
+
+  //! \brief The same error without the scaling the engine applies to it - what
+  //! the pipeline is really doing, for reporting rather than correcting.
+  double GetSyncErrorRaw() const { return m_syncErrorRaw; }
+
   void SetSyncErrorCorrection(double correction);
 
   /*!
@@ -68,6 +78,8 @@ protected:
   double m_playingPts;
   double m_timeOfPts;
   double m_syncError;
+  double m_syncErrorRaw{0.0};
+  bool m_syncErrorRawValid{false};
   unsigned int m_syncErrorTime;
   double m_resampleRatio = 0.0; // invalid
   CCriticalSection m_critSection;

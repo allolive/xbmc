@@ -100,6 +100,9 @@ void CAMLLatency::Rearm()
   m_pollValid = false;
   m_reports = 0;
   m_alignSum = 0.0;
+  m_audioReports = 0;
+  m_audioSum = 0.0;
+  m_leadSum = 0.0;
   m_cadenceSeq = 0;
   m_ratioIsOne = false;
   m_classArmed = false;
@@ -448,7 +451,7 @@ void CAMLLatency::Poll()
   m_haveShown = true;
 }
 
-void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps)
+void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps, double audioSyncError)
 {
   if (!m_pollValid || m_period <= 0.0)
     return;
@@ -524,6 +527,24 @@ void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps)
     m_alignSum += alignment;
     ++m_reports;
 
+    // Sampled here rather than on every frame so the two summaries cover the
+    // same refreshes and can be subtracted. The reading behind it only changes
+    // about once a second - ActiveAE averages over that interval - so this is a
+    // time weighting of those, and the spread is theirs, not this loop's.
+    if (audioSyncError != DVD_NOPTS_VALUE)
+    {
+      if (m_audioReports == 0)
+        m_audioMin = m_audioMax = audioSyncError;
+      else
+      {
+        m_audioMin = std::min(m_audioMin, audioSyncError);
+        m_audioMax = std::max(m_audioMax, audioSyncError);
+      }
+      m_audioSum += audioSyncError;
+      m_leadSum += audioSyncError + alignment;
+      ++m_audioReports;
+    }
+
     if (absolute - m_since >= TIME_BETWEEN_REPORTS)
     {
       const double mean = m_alignSum / m_reports;
@@ -534,6 +555,33 @@ void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps)
                 m_cadenceRefreshes > 0
                     ? static_cast<double>(m_polls) / static_cast<double>(m_cadenceRefreshes)
                     : 0.0);
+
+      // The picture's own figure says nothing about lip sync on its own - the
+      // sound is left alone by ActiveAE once it is within 30ms and answered
+      // after that by stepping the master clock, not the audio, and only past a
+      // 50ms band - so the other half is said beside it, in the same units and
+      // over the same window. Signs are opposite at source and reconciled here: the
+      // alignment is how late the picture was, the audio error is how early the
+      // sound was, so the lead is their sum. Said even when there is nothing to
+      // say, because a line that goes missing reads as a clean sheet.
+      if (m_audioReports > 0)
+      {
+        // The picture term is restated over the frames the audio was measured
+        // on, not the whole window: the line above averages every frame, and
+        // where the two counts differ - any window holding a start, a seek or a
+        // track change - the three numbers would not add up and the report
+        // would read as broken.
+        CLog::Log(LOGDEBUG, LOGVIDEO,
+                  "CAMLLatency: audio {:+.2f}ms [{:+.2f}..{:+.2f}] over {} frames, "
+                  "picture {:+.2f}ms over those, {:+.2f}ms ahead at the connector",
+                  m_audioSum / m_audioReports / 1000.0, m_audioMin / 1000.0, m_audioMax / 1000.0,
+                  m_audioReports, (m_leadSum - m_audioSum) / m_audioReports / 1000.0,
+                  m_leadSum / m_audioReports / 1000.0);
+      }
+      else
+      {
+        CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLLatency: audio not measured");
+      }
 
       // The span comes first because the faults mean nothing without it: a
       // report that checked no refreshes has to read as exactly that, and not
@@ -685,6 +733,9 @@ void CAMLLatency::Update(CDVDClock& clock, uint64_t ptsUs, double fps)
 
       m_reports = 0;
       m_alignSum = 0.0;
+      m_audioReports = 0;
+      m_audioSum = 0.0;
+      m_leadSum = 0.0;
       m_polls = 0;
       m_cadenceRefreshes = 0;
     }

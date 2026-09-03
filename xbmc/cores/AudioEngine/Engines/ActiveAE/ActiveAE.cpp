@@ -26,6 +26,7 @@
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 
@@ -42,6 +43,9 @@ constexpr float MIN_WATER_LEVEL = 0.02f; // min buffer time to prevent underrun
 constexpr float MIN_WATER_LEVEL_RESAMPLE = 0.1f; // min buffer time in resample mode
 constexpr float BUFFER_LEVEL_INCREMENT = 0.0001f; // increment step for ramp-up
 constexpr double MAX_BUFFER_TIME = 0.1; // max time of a buffer in seconds;
+// What a TrueHD passthrough stream's sync error is shrunk by before the sync
+// loop sees it. Named so the unscaled copy kept beside it has one source.
+constexpr double TRUEHD_SYNC_ERROR_SCALE = 0.45;
 
 bool IsDefaultDevice(const AESinkDevice& device)
 {
@@ -117,6 +121,8 @@ void CEngineStats::AddStream(unsigned int streamid)
   stream.m_bufferedTime = 0;
   stream.m_resampleRatio = 1.0;
   stream.m_syncError = 0;
+  stream.m_syncErrorRaw = 0;
+  stream.m_syncErrorRawValid = false;
   stream.m_syncState = CAESyncInfo::AESyncState::SYNC_OFF;
   m_streamStats.push_back(stream);
 }
@@ -143,6 +149,9 @@ void CEngineStats::UpdateStream(CActiveAEStream *stream)
       float delay = 0;
       str.m_syncState = stream->m_syncState;
       str.m_syncError = stream->m_syncError.GetLastError(str.m_errorTime);
+      unsigned int rawTime;
+      str.m_syncErrorRaw = stream->m_syncErrorRaw.GetLastError(rawTime);
+      str.m_syncErrorRawValid = stream->m_syncErrorRaw.LastErrorValid();
       if (stream->m_processingBuffers)
       {
         str.m_resampleRatio = stream->m_processingBuffers->GetRR();
@@ -216,6 +225,8 @@ void CEngineStats::GetSyncInfo(CAESyncInfo& info, CActiveAEStream *stream)
       status.delay += static_cast<double>(buffertime) * str.m_resampleRatio;
       info.delay = status.GetDelay();
       info.error = str.m_syncError;
+      info.errorRaw = str.m_syncErrorRaw;
+      info.errorRawValid = str.m_syncErrorRawValid;
       info.errortime = str.m_errorTime;
       info.state = str.m_syncState;
       info.rr = str.m_resampleRatio;
@@ -1586,6 +1597,7 @@ void CActiveAE::SFlushStream(CActiveAEStream *stream)
   stream->m_paused = false;
   stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
   stream->m_syncError.Flush();
+  stream->m_syncErrorRaw.Flush();
   stream->ResetFreeBuffers();
 
   // Reset Logic State Variables to revive Servo
@@ -2101,10 +2113,15 @@ bool CActiveAE::RunStages()
         double maxError = ((*it)->m_syncState == CAESyncInfo::SYNC_INSYNC) ? 1000 : 5000;
         double error = playingPts - (*it)->m_pClock->GetClock();
 
+        // Kept before the scaling and clamped on its own, so a report reading it
+        // gets what the pipeline is doing rather than what the sync loop was
+        // asked to believe. Never read back here.
+        double errorRaw = std::clamp(error, -maxError, maxError);
+
         // underestimate error for TrueHD passthrough
         // oscillations should be less than frametime 40ms to avoid unnecessary a/v sync corrections
         if (isTrueHDPassthrough)
-          error *= 0.45;
+          error *= TRUEHD_SYNC_ERROR_SCALE;
 
         if (error > maxError)
         {
@@ -2117,6 +2134,7 @@ bool CActiveAE::RunStages()
           error = -maxError;
         }
         (*it)->m_syncError.Add(error);
+        (*it)->m_syncErrorRaw.Add(errorRaw);
       }
     }
 
@@ -2500,6 +2518,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
   {
     stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
     stream->m_syncError.Flush(100ms);
+    stream->m_syncErrorRaw.Flush(100ms);
     stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
     stream->m_resampleIntegral = 0;
     CLog::Log(LOGDEBUG,"ActiveAE - start sync of audio stream");
@@ -2522,6 +2541,8 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
                                           ? 100ms
                                           : stream->GetErrorInterval();
   bool newerror = stream->m_syncError.Get(error, timeout);
+  if (newerror)
+    stream->m_syncErrorRaw.Latch(timeout);
 
   if (newerror && fabs(error) > threshold && stream->m_syncState == CAESyncInfo::AESyncState::SYNC_INSYNC)
   {
@@ -2583,11 +2604,13 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
             ret->pkt->pause_burst_ms = stream->m_format.m_streamInfo.GetDuration();
 
           stream->m_syncError.Correction(-ret->pkt->pause_burst_ms);
+          stream->m_syncErrorRaw.Correction(-ret->pkt->pause_burst_ms);
           error -= ret->pkt->pause_burst_ms;
         }
         else
         {
           stream->m_syncError.Correction(-framesToDelay*1000/ret->pkt->config.sample_rate);
+          stream->m_syncErrorRaw.Correction(-framesToDelay*1000/ret->pkt->config.sample_rate);
           error -= framesToDelay*1000/ret->pkt->config.sample_rate;
           for(int i=0; i<ret->pkt->planes; i++)
           {
@@ -2621,6 +2644,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         if (-error > stream->m_format.m_streamInfo.GetDuration() / 2)
         {
           stream->m_syncError.Correction(stream->m_format.m_streamInfo.GetDuration());
+          stream->m_syncErrorRaw.Correction(stream->m_format.m_streamInfo.GetDuration());
           error += stream->m_format.m_streamInfo.GetDuration();
           buf->pkt->nb_samples = 0;
         }
@@ -2635,6 +2659,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         }
         buf->pkt->nb_samples -= framesToSkip;
         stream->m_syncError.Correction((double)framesToSkip * 1000 / buf->pkt->config.sample_rate);
+        stream->m_syncErrorRaw.Correction((double)framesToSkip * 1000 / buf->pkt->config.sample_rate);
         error += (double)framesToSkip * 1000 / buf->pkt->config.sample_rate;
       }
       CLog::Log(LOGDEBUG, LOGAUDIO, "ActiveAE::SyncStream - skip frames:{:d} error {:.0f}ms", framesToSkip, error);
@@ -2646,6 +2671,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       {
         stream->m_syncState = CAESyncInfo::AESyncState::SYNC_MUTE;
         stream->m_syncError.Flush(100ms);
+        stream->m_syncErrorRaw.Flush(100ms);
         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f}, last average error: {:f}",
                   error, stream->m_lastSyncError);
         stream->m_lastSyncError = error;
@@ -2654,6 +2680,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       {
         stream->m_syncState = CAESyncInfo::AESyncState::SYNC_INSYNC;
         stream->m_syncError.Flush(1000ms);
+        stream->m_syncErrorRaw.Flush(1000ms);
         stream->m_resampleIntegral = 0;
         stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} below threshold of {:f}",
@@ -2679,7 +2706,10 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
     stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
   }
 
-  stream->m_syncError.SetErrorInterval(stream->GetErrorInterval());
+  // One reading, so the two windows cannot be armed to different lengths.
+  const std::chrono::milliseconds errorInterval = stream->GetErrorInterval();
+  stream->m_syncError.SetErrorInterval(errorInterval);
+  stream->m_syncErrorRaw.SetErrorInterval(errorInterval);
 
   return ret;
 }
