@@ -109,6 +109,9 @@ private:
 
   DllLibAmCodec   *m_dll;
   bool             m_opened;
+  //! Whether the audio was a bitstream last frame, so the trim is given back
+  //! once on the way out rather than on every frame after it.
+  bool             m_trimWasPassthrough{false};
   bool             m_drain = false;
   am_private_t    *am_private;
   CDVDStreamInfo   m_hints;

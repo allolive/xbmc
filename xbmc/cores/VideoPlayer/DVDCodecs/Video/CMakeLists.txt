@@ -13,11 +13,13 @@ if(TARGET ffmpeg::libpostproc)
 endif()
 
 if(TARGET ${APP_NAME_LC}::AML)
-  list(APPEND SOURCES AMLCodec.cpp
+  list(APPEND SOURCES AMLAudioTrim.cpp
+                      AMLCodec.cpp
                       AMLGenlock.cpp
                       AMLLatency.cpp
                       DVDVideoCodecAmlogic.cpp)
-  list(APPEND HEADERS AMLCodec.h
+  list(APPEND HEADERS AMLAudioTrim.h
+                      AMLCodec.h
                       AMLGenlock.h
                       AMLLatency.h
                       DVDVideoCodecAmlogic.h)

@@ -622,6 +622,7 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
   // A saturated reading is withheld as well as refused: it is the clamp, not a
   // measurement, and a reader that acted on it would be acting on the same
   // figure the correction above declines to use.
+  m_processInfo.SetAudioPassthrough(m_audioSink.IsPassthrough());
   m_processInfo.SetAudioSyncError(
       (m_audioSink.HasSyncError() && !m_audioSink.IsSyncErrorSaturated())
           ? m_audioSink.GetSyncErrorRaw() + m_pClock->GetVsyncAdjust()

@@ -97,6 +97,13 @@ public:
   void SetAudioSyncError(double error) { m_audioSyncError.store(error); }
   double GetAudioSyncError() const { return m_audioSyncError.load(); }
 
+  //! \brief Whether the sink is carrying a bitstream rather than samples. The
+  //! trim below only reaches a bitstream: mpll0 clocks the framing one goes out
+  //! in, while samples take another path entirely. A reader deciding whether the
+  //! knob it has can reach this stream at all needs to know which.
+  void SetAudioPassthrough(bool passthrough) { m_audioPassthrough.store(passthrough); }
+  bool GetAudioPassthrough() const { return m_audioPassthrough.load(); }
+
   virtual bool AllowDTSHDDecode();
   virtual bool WantsRawPassthrough() { return false; }
 
@@ -190,6 +197,7 @@ protected:
   int m_audioQueueLevel = 0;
   int m_audioQueueDataLevel = 0;
   std::atomic<double> m_audioSyncError{DVD_NOPTS_VALUE};
+  std::atomic<bool> m_audioPassthrough{false};
   CCriticalSection m_audioCodecSection;
 
   // player subtitle info
