@@ -86,6 +86,7 @@ public:
   static int    OMXDurationToNs(int duration);
   int           GetAmlDuration() const;
   int           ReleaseFrame(const uint32_t index, bool bDrop = false);
+  void          LatencyTick(uint64_t omxPts);
 
   static int    PollFrame();
   static void   SetPollDevice(int device);
@@ -109,7 +110,7 @@ private:
   bool             m_drain = false;
   am_private_t    *am_private;
   CDVDStreamInfo   m_hints;
-  int              m_speed;
+  std::atomic<int> m_speed;
   uint64_t         m_cur_pts;
   uint64_t         m_last_pts;
   uint32_t         m_bufferIndex;

@@ -18,7 +18,10 @@
 #include "utils/EGLFence.h"
 #include "utils/EGLUtils.h"
 
+#include "cores/VideoPlayer/VideoRenderers/DebugInfo.h"
+
 #include <atomic>
+#include <thread>
 #include <gbm.h>
 
 class IDispResource;
@@ -43,6 +46,31 @@ public:
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
   float GetGuiSdrPeakLuminance() const override;
   HDR_STATUS GetOSHDRStatus() override;
+
+  //! \brief The measured cost of the video pipeline, in milliseconds, or -1
+  //! until it is known, which asks CGraphicContext for its buffer-count
+  //! estimate instead. Measured by CAMLLatency during playback.
+  float GetDisplayLatency() override;
+
+  //! \brief Milliseconds since the display began the frame on screen, less half
+  //! a refresh period. PrepareNextRender() subtracts it from m_displayLatency,
+  //! so the frame is decided as of the frame on screen and half a frame before
+  //! the display switches, instead of against a free-running clock.
+  float GetFrameLatencyAdjustment() override;
+
+  //! \brief Name the thread that schedules frames. Until this is called the
+  //! cached value is served to everyone, which is the base-class behaviour.
+  void RegisterRenderThread();
+
+  //! \brief Read the vblank phase, refresh what other threads see, and return
+  //! it: milliseconds since the display began the frame on screen, less half a
+  //! refresh.
+  float SampleFrameLatency();
+
+  //! \brief Feeds the playback debug overlay: what the pipeline measured at,
+  //! how far the picture is from its timestamp, and where the display is in its
+  //! own frame. The only way to see these once the diagnostics patch is gone.
+  DEBUG_INFO_RENDER GetDebugInfo() override;
 
   virtual void Register(IDispResource *resource);
   virtual void Unregister(IDispResource *resource);
@@ -79,6 +107,10 @@ protected:
   std::unique_ptr<CAMLGBMUtils> m_amlGBMUtils{nullptr};
   std::unique_ptr<KODI::UTILS::EGL::CEGLFence> m_eglFence{nullptr};
 private:
+  bool m_staleVblankSeen{false};
+  std::atomic<std::thread::id> m_renderThread{};
+  std::atomic<float> m_frameLatencyMs{0.0f};
+  std::atomic<float> m_vblankPhaseMs{0.0f};
   struct callback_data
   {
     struct udev_monitor* udevMonitor;

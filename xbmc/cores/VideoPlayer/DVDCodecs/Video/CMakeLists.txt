@@ -14,8 +14,10 @@ endif()
 
 if(TARGET ${APP_NAME_LC}::AML)
   list(APPEND SOURCES AMLCodec.cpp
+                      AMLLatency.cpp
                       DVDVideoCodecAmlogic.cpp)
   list(APPEND HEADERS AMLCodec.h
+                      AMLLatency.h
                       DVDVideoCodecAmlogic.h)
 endif()
 
