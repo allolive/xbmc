@@ -436,6 +436,7 @@ void CProcessInfo::ResetAudioCodecInfo()
   m_audioLiveBitRate = 0;
   m_audioQueueLevel = 0;
   m_audioQueueDataLevel = 0;
+  m_audioSyncError = DVD_NOPTS_VALUE;
 
   if (m_dataCache)
   {
