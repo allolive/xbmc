@@ -112,6 +112,8 @@ private:
   //! Whether the audio was a bitstream last frame, so the trim is given back
   //! once on the way out rather than on every frame after it.
   bool             m_trimWasPassthrough{false};
+  double           m_lastAudioOffset{0.0};
+  bool             m_offsetStoodDown{false};
   bool             m_drain = false;
   am_private_t    *am_private;
   CDVDStreamInfo   m_hints;

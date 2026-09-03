@@ -43,12 +43,20 @@ public:
     return trim;
   }
 
+  //! \brief Whether this kernel carries the trim knob at all.
+  static bool Supported();
+
   //! \brief Called once per presented frame. Paces itself.
   //! \param error audio ahead of the master clock in DVD time units, or nullopt
   //! when nothing measured it this frame. Must be the unscaled figure: this is a
   //! rate loop, and a reading shrunk by a constant is a gain error.
+  //! \param lead how far the audio leads the picture at the box output, in DVD
+  //! time units, or nullopt when nothing has measured it. Only acted on where a
+  //! cap has been set for it; without one this is a rate loop and nothing else.
   //! \param now the master clock's absolute time, in DVD time units
-  void Update(const std::optional<double>& error, double now);
+  void Update(const std::optional<double>& error,
+              const std::optional<double>& lead,
+              double now);
 
   //! \brief Give the clock back and forget everything. For a decoder closing:
   //! the level must not outlive the playback that asked for it.
@@ -68,6 +76,17 @@ private:
   CAMLAudioTrim& operator=(const CAMLAudioTrim&) = delete;
 
   bool Armed();
+
+  //! \brief The rate error the loop should hold to walk the offset out. Zero
+  //! when there is no offset to walk out, or nothing said how fast it may be.
+  double Aim() const;
+
+  //! \brief The aim expressed as levels, applied without being integrated
+  //! toward. The plant gain is known to better than a percent, so the level a
+  //! rate needs is arithmetic, not something to be discovered.
+  double Feedforward() const;
+
+  std::optional<double> ReadSlew() const;
   void ForgetLocked();
   std::optional<int> ReadLevel() const;
   bool WriteLevel(int level);
@@ -105,4 +124,12 @@ private:
   mutable std::mutex m_mutex; //!< Release() comes from the player thread
 
   double m_lastDither{0.0};   //!< when the level was last put out
+
+  double m_lead{0.0};         //!< audio ahead of picture at the output
+  bool m_haveLead{false};
+
+  double m_slew{0.0};         //!< the largest rate error the offset may ask for
+  std::optional<double> m_slewSeen; //!< the previous read, to confirm a change
+  bool m_haveSlew{false};     //!< whether the offset loop is switched on at all
+  double m_levelMax{2.0};     //!< MAX_LEVEL_RATE, or more once it is
 };

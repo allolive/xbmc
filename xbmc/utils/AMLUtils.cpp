@@ -416,6 +416,42 @@ double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
                           videoDelay);
 }
 
+//! How much of the renderer's display latency was chosen rather than measured,
+//! expressed the way it lands in the audio-versus-picture sum.
+//!
+//! CRenderManager builds m_displayLatency from four terms, and two of them are
+//! somebody's decision rather than a property of the pipeline: the latency tweak
+//! from advancedsettings, which says the display adds time that the picture
+//! should be moved early to cover, and the audio offset, which asks for the two
+//! to be deliberately apart. Both move which frame is on screen at a given clock
+//! time, so both arrive in the alignment term looking exactly like error.
+//!
+//! Returned with the tweak's sign flipped against the offset's, because that is
+//! how they enter: the sum carries +tweak and -offset, so their effect on
+//! alignment is the other way round. A reader that subtracts this is left with
+//! the part nobody asked for, which is the only part worth correcting.
+double aml_render_chosen_offset(StreamHdrType hdrType, float audioDelay)
+{
+  const auto winSystem = CServiceBroker::GetWinSystem();
+  CGraphicContext& gfx = winSystem->GetGfxContext();
+
+  const bool isHDRUsed =
+      winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON && hdrType != StreamHdrType::HDR_TYPE_NONE;
+  float refresh = gfx.GetFPS();
+  if (gfx.GetVideoResolution() == RES_WINDOW)
+    refresh = 0;
+
+  const double latencyTweak = static_cast<double>(
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
+          refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
+
+  // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so this
+  // and the renderer's own sum cannot differ by the truncation.
+  const double videoDelay = static_cast<double>(static_cast<int>(audioDelay * 1000.0f));
+
+  return DVD_MSEC_TO_TIME(videoDelay - latencyTweak);
+}
+
 double aml_refreshes_per_frame(double displayRate, double fps)
 {
   // Zero when the content outruns the display, which shows some frames and
