@@ -2862,7 +2862,8 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
     return;
   }
 
-  CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps());
+  CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps(),
+                                    m_processInfo.GetAudioSyncError());
 }
 
 void CAMLCodec::GenlockTick(uint64_t omxPts)

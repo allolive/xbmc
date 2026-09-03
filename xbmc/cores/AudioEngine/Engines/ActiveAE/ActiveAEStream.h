@@ -39,6 +39,7 @@ public:
   {
     m_buffer = 0.0;
     m_lastError = 0.0;
+    m_lastValid = false;
     m_count  = 0;
     m_timer.Set(interval);
   }
@@ -54,9 +55,11 @@ public:
   {
     if(m_timer.IsTimePast())
     {
+      const bool sampled = m_count != 0;
       error = Get();
       Flush(interval);
       m_lastError = error;
+      m_lastValid = sampled;
       return true;
     }
     else
@@ -70,6 +73,25 @@ public:
   {
     time = m_timer.GetStartTime().time_since_epoch().count();
     return m_lastError;
+  }
+
+  //! \brief Whether the window behind GetLastError() held any samples at all.
+  //! An empty one averages to zero and is stamped with a fresh time like any
+  //! other, so a reader cannot otherwise tell it from a measurement of zero.
+  bool LastErrorValid() const { return m_lastValid; }
+
+  //! \brief Close the current window now, on another accumulator's deadline
+  //! rather than this one's. Two accumulators armed a moment apart have
+  //! deadlines a moment apart, and a poll landing between them would leave one
+  //! answering for the window before. For a second accumulator that has to
+  //! describe exactly the window the first just reported.
+  void Latch(std::chrono::milliseconds interval)
+  {
+    const bool sampled = m_count != 0;
+    const double error = Get();
+    Flush(interval);
+    m_lastError = error;
+    m_lastValid = sampled;
   }
 
   void Correction(double correction)
@@ -87,6 +109,7 @@ protected:
   }
   double m_buffer;
   double m_lastError;
+  bool m_lastValid{false};
   int m_count;
   XbmcThreads::EndTime<> m_timer;
 };
@@ -244,6 +267,11 @@ protected:
   bool m_forceResampler;
   IAEClockCallback *m_pClock;
   CSyncError m_syncError;
+  //! \brief The same measurement without the engine's own scaling, and without
+  //! anything reading it back: kept only so a report can state the offset the
+  //! pipeline really has. Fed and flushed in step with \ref m_syncError so the
+  //! two always describe the same window.
+  CSyncError m_syncErrorRaw;
   double m_lastSyncError;
   CAESyncInfo::AESyncState m_syncState;
 };

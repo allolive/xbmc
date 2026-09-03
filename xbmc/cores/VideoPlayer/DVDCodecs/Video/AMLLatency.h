@@ -81,7 +81,9 @@ public:
 
   //! \brief Called once per presented frame, with the timestamp being handed
   //! over. Arms the matcher and reports where the picture landed.
-  void Update(CDVDClock& clock, uint64_t ptsUs, double fps);
+  //! \param audioSyncError where the audio leaving the sink sits against the
+  //! same clock, from CProcessInfo, or DVD_NOPTS_VALUE when nothing measured it
+  void Update(CDVDClock& clock, uint64_t ptsUs, double fps, double audioSyncError);
 
   //! \brief Re-arm the matcher. A seek moves which frame is on screen, not the
   //! path it travels, so the measured answer still stands.
@@ -213,5 +215,21 @@ private:
   double m_alignSum{0.0};
   double m_alignMin{0.0};
   double m_alignMax{0.0};
+
+  //! \brief Where the audio landed over the same window. The alignment above is
+  //! the picture's answer to "did this land when its timestamp said"; this is
+  //! the sound's, read from the player rather than measured here, and the two
+  //! together are the A/V offset. Sampled on the frames the alignment is taken
+  //! on, so both cover the same refreshes. Read by the AML latency work.
+  unsigned int m_audioReports{0};
+  double m_audioSum{0.0};
+  double m_audioMin{0.0};
+  double m_audioMax{0.0};
+
+  //! \brief The two summed frame by frame, so the lead is a mean of differences
+  //! taken together rather than a difference of two means over windows that need
+  //! not be the same. They part company whenever the audio arrives late or stops
+  //! early, which is every window holding a start, a seek or a track change.
+  double m_leadSum{0.0};
 };
 
