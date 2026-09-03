@@ -53,6 +53,11 @@
 
 namespace
 {
+//! The largest audio offset worth honouring, in seconds. Well past anything a
+//! viewer sets by hand, and short of the range where a mistaken sign would be
+//! driving the clock somewhere absurd.
+constexpr double MAX_AUDIO_OFFSET_S = 1.0;
+
 
 std::mutex pollSyncMutex;
 
@@ -2899,10 +2904,81 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
   }
   m_trimWasPassthrough = true;
 
+  // Where the viewer asked the audio to sit, rather than on top of the picture.
+  // Kodi's audio offset does not touch the audio at all: SetAVDelay feeds
+  // m_videoDelay into RenderManager's display latency, which moves which frame is
+  // shown at a given clock time - so it lands in the alignment half of the sum
+  // below, and a loop driving that sum to zero would take the viewer's setting
+  // back out over the couple of minutes it needs. Aiming at the setting instead
+  // of at zero holds it.
+  //
+  // Both of the renderer's chosen terms, not just the slider. The latency tweak
+  // from advancedsettings moves the picture for the same reason and by the same
+  // route, so a loop told about one and not the other would hold the viewer's
+  // offset and quietly take their display compensation back out.
+  const float set = m_processInfo.GetVideoSettings().m_AudioDelay;
+  const double wanted = aml_render_chosen_offset(m_hints.hdrType, set);
+
+  // Past what is worth honouring the offset loop stands down rather than aiming
+  // at a truncated target. Clamping the aim while the picture moves by the whole
+  // setting leaves a residue the loop can never take out: it rails at its slew
+  // limit for the rest of the title, walking the very setting it is supposed to
+  // be holding, and doing it silently - the drift follows the aim, so the
+  // stand-down watchdog sees a knob that is working perfectly. The rate loop is
+  // untouched by this and goes on nulling the drift; only the offset half stops.
+  const bool tooBig = std::abs(wanted) > MAX_AUDIO_OFFSET_S * DVD_TIME_BASE;
+
+  // Announced when it CHANGES, not merely when it is non-zero. This line is what
+  // tells a correct sign from an inverted one on a box, and the way to read it is
+  // to nudge the setting and watch - so one that reports the first value and then
+  // never speaks again is the one case it has to get right. Compared on the
+  // truncated figure, which also disposes of the float residue that stepping the
+  // offset up and back down with a remote leaves behind.
+  if (wanted != m_lastAudioOffset)
+  {
+    // The picture is about to be held or skipped by the whole difference, and
+    // nothing else tells the matcher that. Left unsaid it reads the hold as the
+    // picture having stopped and warns about frames that were never lost.
+    CAMLLatency::GetInstance().NoteClockDisturbed();
+
+    // One line, and a true one. Saying it is being held and then that it is not
+    // leaves the log contradicting itself in the place the sign is read from.
+    if (tooBig)
+      CLog::Log(LOGINFO,
+                "CAMLCodec: audio offset {:+.0f}ms is past what the trim will hold - leaving it "
+                "to the renderer",
+                wanted / 1000.0);
+    else if (wanted != 0.0)
+      CLog::Log(LOGINFO, "CAMLCodec: holding the audio offset at {:+.0f}ms rather than nulling it",
+                wanted / 1000.0);
+    else
+      CLog::Log(LOGINFO, "CAMLCodec: audio offset back to nominal");
+
+    m_lastAudioOffset = wanted;
+  }
+
+  std::optional<double> lead = CAMLLatency::GetInstance().Lead();
+
+  // Entering or leaving the stand-down steps the setpoint, and the bucket that
+  // spans the step holds a drift the loop asked for measured against an aim it no
+  // longer has. Settle() would read the difference as its own error and rail the
+  // integrator for minutes taking it back out. Dropping that one measurement
+  // costs a bucket and keeps the level, which is what Forget is for.
+  if (tooBig != m_offsetStoodDown)
+  {
+    m_offsetStoodDown = tooBig;
+    CAMLAudioTrim::GetInstance().Forget();
+  }
+
+  if (tooBig)
+    lead.reset();
+  else if (lead)
+    *lead -= wanted;
+
   CAMLAudioTrim::GetInstance().Update(audioError == DVD_NOPTS_VALUE
                                           ? std::nullopt
                                           : std::optional<double>{audioError},
-                                      clock->GetAbsoluteClock());
+                                      lead, clock->GetAbsoluteClock());
 }
 
 void CAMLCodec::GenlockTick(uint64_t omxPts)

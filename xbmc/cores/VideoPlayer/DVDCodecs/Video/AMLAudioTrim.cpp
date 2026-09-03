@@ -10,10 +10,14 @@
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "platform/linux/SysfsPath.h"
 #include "utils/AMLUtils.h"
+#include "ServiceBroker.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/log.h"
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace
 {
@@ -25,9 +29,39 @@ constexpr const char* TRIM_PATH =
 //! lands on the same divider half the time. Two always moves.
 constexpr int STEP = 2;
 
-//! The kernel refuses more than four, and sixty parts per million is already an
-//! order more than anything measured here.
-constexpr double MAX_LEVEL = 2.0;
+//! What the level may reach while the loop is only nulling the rate. Sixty parts
+//! per million is already an order more than the drift measured here.
+constexpr double MAX_LEVEL_RATE = 2.0;
+
+//! What it may reach while it is also walking an offset out. Bounded by the
+//! kernel, which refuses more than forty.
+constexpr double MAX_LEVEL_HW = 20.0;
+
+//! Where the offset loop is switched on, and how hard. The file holds the
+//! largest rate error it may ask for, in parts per million; absent, the loop
+//! only nulls the rate, which is what it did before this existed.
+//!
+//! Runtime rather than built in because the number is not ours to choose: it is
+//! however much the receiver will follow without dropping lock, and that is a
+//! property of the receiver. It has to be found by ear once, on the box.
+
+//! Sanity bounds on what that file may say.
+constexpr double SLEW_MIN = 5e-6;
+constexpr double SLEW_MAX = 600e-6;
+
+//! How long the offset is given to decay. With the level handed straight to the
+//! feedforward the rate is in place within a few ticks, so this really is the
+//! decay the offset follows rather than an upper bound the inner loop spoils.
+//! Short enough that a title's offset is gone before anyone settles in.
+constexpr double OFFSET_TAU = 25.0 * DVD_TIME_BASE;
+
+//! Below this the offset is not worth a rate error. It has to sit well under
+//! whatever the loop actually settles at, not beside it: measured converging to
+//! 0.46ms against a band of 0.5, the aim switched on and off as the figure
+//! crossed it four times a second and the register alternated with it. A band is
+//! meant to be the point the loop stops caring, so it belongs below the noise it
+//! is ignoring rather than in the middle of it.
+constexpr double OFFSET_DEADBAND = DVD_MSEC_TO_TIME(0.15);
 
 //! How long the error is averaged before a slope is taken from it. A minute of
 //! means differ by ~0.02ms while a minute of drift is ~1.2ms, so fifteen seconds
@@ -149,8 +183,12 @@ std::optional<int> CAMLAudioTrim::ReadLevel() const
     if (!path.Exists())
       return std::nullopt;
 
+    // Against the hardware's range and not the loop's. A level this refuses is
+    // read as no answer at all, which freezes the loop and strands whatever the
+    // register happens to hold - so a ceiling here that is lower than one the
+    // loop can legitimately reach is a latch, not a guard.
     const std::optional<int> got = path.Get<int>();
-    if (!got || std::abs(*got) > 4)
+    if (!got || std::abs(*got) > static_cast<int>(MAX_LEVEL_HW) * STEP)
       return std::nullopt;
 
     return got;
@@ -158,6 +196,18 @@ std::optional<int> CAMLAudioTrim::ReadLevel() const
   catch (...)
   {
     return std::nullopt;
+  }
+}
+
+bool CAMLAudioTrim::Supported()
+{
+  try
+  {
+    return CSysfsPath{TRIM_PATH}.Exists();
+  }
+  catch (...)
+  {
+    return false;
   }
 }
 
@@ -252,6 +302,58 @@ void CAMLAudioTrim::Release()
   m_lastDither = 0.0;
 }
 
+double CAMLAudioTrim::Aim() const
+{
+  if (!m_haveSlew || !m_haveLead || std::abs(m_lead) < OFFSET_DEADBAND)
+    return 0.0;
+
+  return std::clamp(-m_lead / OFFSET_TAU, -m_slew, m_slew);
+}
+
+double CAMLAudioTrim::Feedforward() const
+{
+  // What the aim is worth in levels, computed rather than integrated toward.
+  // The step was measured on this hardware at 15.05ppm per sigma-delta unit -
+  // 30.1ppm per level against the 30.0 assumed here, inside half a percent -
+  // so the level a given rate needs is known in advance and there is nothing to
+  // be learned by walking to it.
+  //
+  // This is what makes the correction quick. Left to the integrator alone the
+  // offset could only come out as fast as the rate loop settles, which is
+  // minutes: the outer loop would ask for a rate, the inner one would take three
+  // minutes to get there, and by then the offset had moved on. Handed the level
+  // outright, the rate is there within a few ticks and the offset decays on
+  // OFFSET_TAU as intended, with the integrator left doing what it is good at -
+  // taking out the part this got wrong.
+  return Aim() / STEP_RATE;
+}
+
+//! The cap, in parts per million, or nullopt for a file that is not there or
+//! does not say a usable number. Anything out of bounds is refused rather than
+//! clamped: a file saying 6000 is a typo for 600, and honouring it as the
+//! largest legal value would be reading a mistake as an instruction.
+std::optional<double> CAMLAudioTrim::ReadSlew() const
+{
+  const auto component = CServiceBroker::GetSettingsComponent();
+  if (!component)
+    return std::nullopt;
+
+  const auto settings = component->GetSettings();
+  if (!settings)
+    return std::nullopt;
+
+  // Zero is off, and so is anything the loop cannot act on: the bounds are the
+  // ones the setting is clamped to anyway, so a value outside them reads as off
+  // rather than as a rate nobody meant.
+  const double ppm =
+      static_cast<double>(settings->GetInt(CSettings::SETTING_COREELEC_AMLOGIC_AUDIOLEAD));
+  const double slew = std::abs(ppm) * 1e-6;
+  if (!std::isfinite(slew) || slew < SLEW_MIN || slew > SLEW_MAX)
+    return std::nullopt;
+
+  return slew;
+}
+
 void CAMLAudioTrim::Settle(double reading)
 {
   // Kept as a small history and acted on by the middle value. A clock step too
@@ -276,19 +378,46 @@ void CAMLAudioTrim::Settle(double reading)
   // audio running fast, which wants a lower level. The sign is the measured one:
   // raising the level was seen to raise the rate on this hardware, whatever the
   // divider arithmetic suggests about which way round that ought to be.
-  if (std::abs(drift) > MAX_PLAUSIBLE)
+  const double aim = Aim();
+
+  // Widened by whatever the level is allowed to command. This test is here to
+  // throw out readings no clock could have produced, and once the loop may ask
+  // for 600ppm a 600ppm reading is the loop working, not a bad measurement.
+  // Left at a fixed 200ppm it discards every reading taken while the offset is
+  // being walked out, the level stops being updated, and the rate it happens to
+  // be stuck at then runs uncorrected for the rest of the title.
+  //
+  // Not measured against the aim either, tempting as that is: during the ramp
+  // the rate legitimately lags what was asked for by most of the step, so that
+  // test rejects the whole transient it is supposed to allow.
+  const double plausible = MAX_PLAUSIBLE + m_levelMax * STEP_RATE;
+  if (std::abs(drift) > plausible)
   {
     CLog::Log(LOGDEBUG, LOGAUDIO, "CAMLAudioTrim: {:+.0f}ppm is not a rate, ignoring it",
               drift * 1e6);
     return;
   }
 
-  if (std::abs(drift) < DEADBAND)
+  // The rate the loop is asked to hold. Zero while nothing is driving the
+  // offset, and then this is the loop it always was.
+  //
+  // Otherwise the offset is walked out by aiming off: an offset of l is taken
+  // away over OFFSET_TAU by running the audio at -l/tau, and when l reaches zero
+  // so does the aim, which is the loop stopping by itself rather than being
+  // stopped. It has to enter as a setpoint and not as a bias on the level - the
+  // integral below drives the rate to whatever it is told, so a bias added after
+  // it would simply be integrated back out again.
+  const double err = drift - aim;
+
+  if (std::abs(err) < DEADBAND)
     return;
 
   const double was = m_want;
-  m_want -= GAIN * drift / STEP_RATE;
-  m_want = std::clamp(m_want, -MAX_LEVEL, MAX_LEVEL);
+  m_want -= GAIN * err / STEP_RATE;
+
+  // The integrator keeps the rate range it always had. What the offset needs on
+  // top of that is not integrated at all - see Feedforward().
+  m_want = std::clamp(m_want, -MAX_LEVEL_RATE, MAX_LEVEL_RATE);
 
   // Held against its limit while the drift says nothing changed. The level has
   // been moved by its whole range and the measurement has not answered, so
@@ -309,9 +438,15 @@ void CAMLAudioTrim::Settle(double reading)
   // giving up would hand back the part it had. So the test is not "still
   // drifting" but "moved the level and nothing happened".
   const double moved = m_haveDriftAtZero ? std::abs(drift - m_driftAtZero) : 0.0;
-  const bool answered = moved > 0.5 * MAX_LEVEL * STEP_RATE;
+  const bool answered = moved > 0.5 * MAX_LEVEL_RATE * STEP_RATE;
 
-  if (std::abs(m_want) >= MAX_LEVEL && std::abs(drift) > ANSWERED && !answered)
+  // Against err and not drift. Walking an offset out means deliberately holding
+  // a large rate error, and a level sitting at its limit doing exactly what it
+  // was told is not a knob that has stopped listening.
+  // A level the ceiling never let reach the clock says nothing about whether the
+  // clock listens, so this only counts while a write is permitted.
+  if (m_levelMax > 0.0 && std::abs(m_want) >= MAX_LEVEL_RATE && std::abs(err) > ANSWERED &&
+      !answered)
     ++m_clamped;
   else
     m_clamped = 0;
@@ -324,18 +459,31 @@ void CAMLAudioTrim::Settle(double reading)
               drift * 1e6, m_clamped);
     m_want = 0.0;
     m_dither = 0.0;
-    WriteLevel(0);
+    if (m_everWrote && m_applied != 0)
+      WriteLevel(0);
     m_stopped = true;
     return;
   }
 
-  CLog::Log(LOGDEBUG, LOGAUDIO, "CAMLAudioTrim: audio {:+.1f}ppm, level {:.2f} -> {:.2f}",
-            drift * 1e6, was, m_want);
+  if (aim != 0.0)
+    CLog::Log(LOGDEBUG, LOGAUDIO,
+              "CAMLAudioTrim: audio {:+.1f}ppm, aiming {:+.1f}ppm to take out {:+.1f}ms, level "
+              "{:.2f} -> {:.2f}",
+              drift * 1e6, aim * 1e6, m_lead / 1000.0, was, m_want);
+  else
+    CLog::Log(LOGDEBUG, LOGAUDIO, "CAMLAudioTrim: audio {:+.1f}ppm, level {:.2f} -> {:.2f}",
+              drift * 1e6, was, m_want);
 }
 
-void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
+void CAMLAudioTrim::Update(const std::optional<double>& error,
+                           const std::optional<double>& lead,
+                           double now)
 {
   std::lock_guard<std::mutex> lock(m_mutex);
+
+  m_haveLead = lead.has_value();
+  if (lead)
+    m_lead = *lead;
 
   if (m_stopped)
     return;
@@ -388,6 +536,48 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
     }
     m_lastDither = now;
     return;
+  }
+
+  // Below the arming gate, so a disarmed loop does no file IO at all. Re-read
+  // rather than latched: changing it mid playback is how the cap gets found.
+  if (now - m_lastDither >= DITHER)
+  {
+    const std::optional<double> slew = ReadSlew();
+
+    // Acted on only once it has said the same thing twice. The setting can move
+    // under the loop while a slider is being dragged, and taking the first value
+    // seen would otherwise dump the integrator and log a spurious
+    // pair of on/off lines.
+    if (slew == m_slewSeen)
+    {
+      const bool had = m_haveSlew;
+      m_haveSlew = slew.has_value();
+      m_slew = slew.value_or(0.0);
+
+      // Floored to a whole level. The clamp below rounds to an integer before
+      // applying it, so a fractional ceiling clamps a rounded level back to a
+      // fraction, the cast to int then truncates it, and the sigma-delta carry
+      // it did not pay off latches and is never paid off again.
+      // Off means the clock is not touched at all, not merely that the offset is
+      // left alone: with no ceiling the level is always zero, the write is skipped,
+      // and what remains is measurement. That keeps the drift readings - cleaner
+      // ones, since nothing is correcting underneath them - on hardware this has
+      // never been tried on, without writing that hardware's audio clock.
+      m_levelMax = m_haveSlew
+                       ? std::floor(std::min(MAX_LEVEL_HW, MAX_LEVEL_RATE + m_slew / STEP_RATE))
+                       : 0.0;
+
+      // Deliberately not clamping m_want here. Dropping the ceiling under a
+      // wound-up level would step the rate by the whole difference at once, and
+      // taking the file away is the documented kill switch - the one path that
+      // must not itself be the most violent thing the loop ever does. With the
+      // aim gone the integrator walks it back down within a few decisions, and
+      // the per-tick limit in WriteLevel bounds how fast that reaches the clock.
+      if (m_haveSlew != had)
+        CLog::Log(LOGINFO, "CAMLAudioTrim: offset loop {}",
+                  m_haveSlew ? fmt::format("on, up to {:+.0f}ppm", m_slew * 1e6) : "off");
+    }
+    m_slewSeen = slew;
   }
 
   if (error)
@@ -451,16 +641,17 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
   // Sigma-delta: the fraction the level cannot express is carried and paid off
   // by the next slot that can, so the average over a few slots is the wanted
   // level even though every slot is a whole one.
-  const double target = m_want + m_dither;
+  const double target =
+      std::clamp(m_want + Feedforward(), -m_levelMax, m_levelMax) + m_dither;
 
   // Clamped after rounding as well as before: the carried fraction can take a
   // level already at the limit half a step past it, and the kernel refuses the
   // whole write rather than the excess.
-  const double put = std::clamp(std::round(target), -MAX_LEVEL, MAX_LEVEL);
-  m_dither = std::clamp(target - put, -1.0, 1.0);
-
-  const int level = static_cast<int>(put) * STEP;
-
+  // Read before the level is decided, not after. What the step below may be is
+  // measured from where the register actually is, so this has to be the fresh
+  // value - against last tick's remembered one the limit is computed from a base
+  // that may have moved, and bounds the wrong distance.
+  //
   // Against the register, not against what was last written to it. A remembered
   // value that the register no longer holds is a loop that has stopped driving
   // and cannot tell: it goes on integrating, reaches its limit, and leaves the
@@ -473,6 +664,27 @@ void CAMLAudioTrim::Update(const std::optional<double>& error, double now)
     return;
 
   m_applied = *got;
+
+  double put = std::clamp(std::round(target), -m_levelMax, m_levelMax);
+
+  // One level a tick. The dither already moves by exactly one, so this is
+  // invisible in normal running; what it bounds is the ways the loop can be
+  // asked to move the level far in one go - the ceiling dropping when the cap
+  // file is taken away, an integrator that wound up while the register was being
+  // refused, or the register having been moved from outside. A rate
+  // discontinuity is the one thing a receiver locked to this clock cannot be
+  // asked to follow.
+  //
+  // Only this path. Release, a stand-down and a disarm all write zero directly
+  // and are meant to: the first two mean the level must not outlive what asked
+  // for it, and the third is a kill switch. Those go straight there.
+  if (m_everWrote)
+    put = std::clamp(put, static_cast<double>(m_applied) / STEP - 1.0,
+                     static_cast<double>(m_applied) / STEP + 1.0);
+
+  m_dither = std::clamp(target - put, -1.0, 1.0);
+
+  const int level = static_cast<int>(put) * STEP;
   if (level != m_applied)
     WriteLevel(level);
 }
