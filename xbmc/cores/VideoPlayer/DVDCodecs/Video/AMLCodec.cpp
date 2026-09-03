@@ -43,6 +43,7 @@
 #include <linux/videodev2.h>
 #include <sys/poll.h>
 #include <chrono>
+#include <exception>
 #include <thread>
 #include "aom_integer.h"
 #include "obu_util.h"
@@ -2571,7 +2572,20 @@ void CAMLCodec::CloseAmlVideo()
 
   if (am_private->vcodec.dec_mode == STREAM_TYPE_SINGLE)
   {
-    SetVfmMap("default", m_defaultVfmMap);
+    // An empty map exists with no nodes - not worth restoring over a working chain.
+    if (!m_defaultVfmMap.empty())
+    {
+      try
+      {
+        SetVfmMap("default", m_defaultVfmMap);
+      }
+      catch (const std::exception& e)
+      {
+        // Reached from the codec's destructor, where an escape would terminate.
+        CLog::Log(LOGERROR, "CAMLCodec::{} - could not restore the vfm map: {}",
+                  __FUNCTION__, e.what());
+      }
+    }
     std::string().swap(m_defaultVfmMap);
   }
 }
