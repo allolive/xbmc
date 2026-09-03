@@ -9,6 +9,7 @@
 
 #include "AMLCodec.h"
 
+#include "AMLAudioTrim.h"
 #include "AMLLatency.h"
 #include "DynamicDll.h"
 
@@ -2533,6 +2534,7 @@ void CAMLCodec::CloseDecoder()
   m_dll->codec_close(&am_private->vcodec);
   dumpfile_close(am_private);
   m_opened = false;
+  m_trimWasPassthrough = false;
 
   // After m_opened, so a frame still queued in the renderer cannot tick this
   // back to life: the measured path belongs to this decoder, and whatever plays
@@ -2619,6 +2621,11 @@ void CAMLCodec::Reset()
 {
   CAMLLatency::GetInstance().Restart();
   m_genlock.Restart();
+
+  // The rate loop keeps its level and drops its measurement: a seek moves the
+  // audio error by however far the seek went, and an interval spanning that is
+  // not a measurement of any clock.
+  CAMLAudioTrim::GetInstance().Forget();
 
   CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
 
@@ -2870,12 +2877,43 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
       clock->GetSpeedAdjust() != 0.0)
   {
     CAMLLatency::GetInstance().NoteClockDisturbed();
+
+    // The audio rate loop keeps its correction - the silicon has not changed
+    // speed because the picture stopped - but not its measurement, since a
+    // paused or slewed clock moves the error by hand.
+    CAMLAudioTrim::GetInstance().Forget();
     return;
   }
 
-  CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps(),
-                                    m_processInfo.GetAudioSyncError(),
+  const double audioError = m_processInfo.GetAudioSyncError();
+
+  CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps(), audioError,
                                     m_processInfo.IsRenderClockSync());
+
+  // Only where the knob reaches. The trim moves mpll0, which clocks the framing a
+  // bitstream goes out in; samples take another path entirely, and on this box
+  // the loop measured a real drift there, moved its level across its whole range
+  // and saw nothing answer - standing down correctly, but only after several
+  // minutes of sixty parts per million applied to a clock that never heard it. The engine
+  // can resample samples in any case, so there was nothing here to win.
+  //
+  // Given back once on the way out rather than on every frame after it: the
+  // release is what clears a stand-down, and repeating it would erase the loop's
+  // memory of having given up as fast as it formed.
+  const bool passthrough = m_processInfo.GetAudioPassthrough();
+  if (!passthrough)
+  {
+    if (m_trimWasPassthrough)
+      CAMLAudioTrim::GetInstance().Release();
+    m_trimWasPassthrough = false;
+    return;
+  }
+  m_trimWasPassthrough = true;
+
+  CAMLAudioTrim::GetInstance().Update(audioError == DVD_NOPTS_VALUE
+                                          ? std::nullopt
+                                          : std::optional<double>{audioError},
+                                      clock->GetAbsoluteClock());
 }
 
 void CAMLCodec::GenlockTick(uint64_t omxPts)
@@ -3056,6 +3094,7 @@ void CAMLCodec::SetSpeed(int speed)
   // skipped the pause.
   CAMLLatency::GetInstance().NoteClockDisturbed();
   m_genlock.Restart();
+  CAMLAudioTrim::GetInstance().Forget();
 
   CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
 

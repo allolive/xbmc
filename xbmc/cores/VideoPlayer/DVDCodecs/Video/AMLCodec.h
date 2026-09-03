@@ -107,6 +107,9 @@ private:
 
   DllLibAmCodec   *m_dll;
   bool             m_opened;
+  //! Whether the audio was a bitstream last frame, so the trim is given back
+  //! once on the way out rather than on every frame after it.
+  bool             m_trimWasPassthrough{false};
   //! Whether this took the system default vfm chain away, so the close puts back
   //! only what it actually took.
   bool             m_vfmMapOverridden{false};
