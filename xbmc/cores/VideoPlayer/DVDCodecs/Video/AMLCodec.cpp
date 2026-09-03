@@ -1316,7 +1316,13 @@ int av1_add_frame_dec_info(am_private_t *para)
   am_packet_t *pkt = &para->am_pkt;
 
   unsigned int dst_frame_size = 0;
-  uint8_t *dst_data = (uint8_t *)calloc(1, pkt->data_size + 4096);
+  // av1_parser_frame prepends a 20-byte header per OBU. The smallest OBU it will
+  // consume is two bytes - a header byte and a leb128 zero size, which is what a
+  // run of temporal delimiters looks like - so at most data_size/2 of them come
+  // out as data_size + 20 * data_size/2, eleven times the payload.
+  uint8_t *dst_data = (uint8_t *)calloc(1, (size_t)pkt->data_size * 11 + 4096);
+  if (!dst_data)
+    return PLAYER_NOMEM;
   av1_parser_frame(0, pkt->data, pkt->data + pkt->data_size, dst_data, &dst_frame_size, NULL, NULL);
 
   if (dst_frame_size - pkt->data_size > 0)
