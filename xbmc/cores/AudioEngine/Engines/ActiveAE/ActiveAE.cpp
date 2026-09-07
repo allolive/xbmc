@@ -2641,14 +2641,19 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         ret->pkt->nb_samples = framesToDelay;
         if (m_mode == MODE_RAW)
         {
+          // The burst removes real time while error is scaled, so the size and
+          // the credit both have to cross the scale.
+          const double realError = error / stream->m_errorScale;
+
           ret->pkt->nb_samples = 0;
-          ret->pkt->pause_burst_ms = error;
-          if (error > stream->m_format.m_streamInfo.GetDuration())
+          ret->pkt->pause_burst_ms = realError;
+          if (realError > stream->m_format.m_streamInfo.GetDuration())
             ret->pkt->pause_burst_ms = stream->m_format.m_streamInfo.GetDuration();
 
-          stream->m_syncError.Correction(-ret->pkt->pause_burst_ms);
+          const double credit = ret->pkt->pause_burst_ms * stream->m_errorScale;
+          stream->m_syncError.Correction(-credit);
           stream->m_syncErrorRaw.Correction(-ret->pkt->pause_burst_ms);
-          error -= ret->pkt->pause_burst_ms;
+          error -= credit;
         }
         else
         {
@@ -2684,11 +2689,14 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       }
       if (m_mode == MODE_RAW)
       {
-        if (-error > stream->m_format.m_streamInfo.GetDuration() / 2)
+        // The same crossing as the delay branch: a whole frame of real time
+        // goes, and the scaled error is owed only its share of it.
+        const double dropped = stream->m_format.m_streamInfo.GetDuration();
+        if (-error / stream->m_errorScale > dropped / 2)
         {
-          stream->m_syncError.Correction(stream->m_format.m_streamInfo.GetDuration());
-          stream->m_syncErrorRaw.Correction(stream->m_format.m_streamInfo.GetDuration());
-          error += stream->m_format.m_streamInfo.GetDuration();
+          stream->m_syncError.Correction(dropped * stream->m_errorScale);
+          stream->m_syncErrorRaw.Correction(dropped);
+          error += dropped * stream->m_errorScale;
           buf->pkt->nb_samples = 0;
         }
       }
