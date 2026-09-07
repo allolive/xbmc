@@ -928,6 +928,22 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
             ValidateOutputDevices(false);
           }
           Configure();
+          // The sink was unconfigured and has just been rebuilt, so the delay
+          // every stream is measured against has moved. Saying so is what the
+          // resume path already does; Configure cannot, because it only re-inits
+          // when the format or the device changed and a display reset moves
+          // neither.
+          if (displayReset && !m_extError)
+          {
+            // The clock test is SyncStream's own: a stream without one never
+            // enters the state machine, so marking it would strand it here.
+            for (auto& stream : m_streams)
+              if (stream->m_pClock)
+              {
+                stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+                m_stats.UpdateStream(stream);
+              }
+          }
           if (!displayReset)
             msg->Reply(CActiveAEControlProtocol::ACC);
           if (!m_extError)
