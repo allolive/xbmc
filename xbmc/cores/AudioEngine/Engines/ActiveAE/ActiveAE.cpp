@@ -2732,7 +2732,9 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
       CLog::Log(LOGDEBUG, LOGAUDIO, "ActiveAE::SyncStream - skip frames:{:d} error {:.0f}ms", framesToSkip, error);
     }
 
-    if (fabs(error) < 30)
+    // The band is a tolerance on real time - the comment on the scaling calls it
+    // a frame - so it is compared in the units the bursts were spent in.
+    if (fabs(error) < 30 * stream->m_errorScale)
     {
       if (stream->m_lastSyncError > threshold * 2)
       {
@@ -2751,7 +2753,7 @@ CSampleBuffer* CActiveAE::SyncStream(CActiveAEStream *stream)
         stream->m_resampleIntegral = 0;
         stream->m_processingBuffers->SetRR(1.0, m_settings.atempoThreshold);
         CLog::Log(LOGDEBUG, "ActiveAE::SyncStream - average error {:f} below threshold of {:f}",
-                  error, 30.0);
+                  error, 30 * stream->m_errorScale);
       }
     }
 
