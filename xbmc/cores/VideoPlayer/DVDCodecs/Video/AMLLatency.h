@@ -111,6 +111,10 @@ public:
 private:
   void Rearm();
 
+  //! \brief Whether a warning may be emitted now. Capped in number and spaced in
+  //! time: each one is a synchronous log flush on the frame loop.
+  bool MayWarn();
+
   //! \brief Says so at once, outside the video component so it is visible with
   //! debug logging off, and stops talking after a few so a broken stream cannot
   //! bury the rest of the log.
@@ -200,6 +204,14 @@ private:
   unsigned int m_cleanRun{0};  //!< consecutive good refreshes, for arming
   unsigned int m_seenRun{0};   //!< refreshes since the re-arm, to arm anyway
   unsigned int m_heldRun{0};   //!< consecutive held refreshes, to spot a stop
+
+  //! \brief The clock and the host at the previous presented frame. Kept
+  //! separately from the drift anchors, which a disturbance drops.
+  bool m_haveStepPrev{false};
+  double m_stepPrevClock{0.0};
+  double m_stepPrevAbsolute{0.0};
+  unsigned int m_stepsSeen{0};
+  double m_stepWorst{0.0};
 
   double m_lastDisturbUs{0.0};    //!< when something said the picture would stop
   unsigned int m_heldPending{0};  //!< a run not yet known to be a hold or a stop
