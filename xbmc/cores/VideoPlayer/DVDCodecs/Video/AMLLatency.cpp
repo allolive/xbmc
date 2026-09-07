@@ -126,14 +126,17 @@ void CAMLLatency::Rearm()
   m_driftAnchored = false;
   m_driftWalkUs = 0.0;
   m_driftFrames = 0;
+  m_haveStepPrev = false;
+  m_stepsSeen = 0;
+  m_stepWorst = 0.0;
 }
 
-void CAMLLatency::WarnFrame(const char* what, unsigned int frames, uint32_t ticks)
+bool CAMLLatency::MayWarn()
 {
   if (m_warned >= WARN_LIMIT)
   {
     ++m_hidden;
-    return;
+    return false;
   }
 
   // Spaced in time, not merely capped in number: a cap alone lets the whole
@@ -143,10 +146,17 @@ void CAMLLatency::WarnFrame(const char* what, unsigned int frames, uint32_t tick
   if (m_lastWarnUs != 0.0 && now - m_lastWarnUs < WARN_INTERVAL_US)
   {
     ++m_hidden;
-    return;
+    return false;
   }
   m_lastWarnUs = now;
   ++m_warned;
+  return true;
+}
+
+void CAMLLatency::WarnFrame(const char* what, unsigned int frames, uint32_t ticks)
+{
+  if (!MayWarn())
+    return;
 
   // Deliberately not carrying the video component: something is wrong with the
   // picture and that should reach the log whatever the debug settings say.
@@ -521,6 +531,29 @@ void CAMLLatency::Update(
     double absolute;
     const double clockNow = clock.GetClock(absolute);
 
+    // Both ends advance by about a frame between presented frames, so what is
+    // left over is somebody moving the clock. Measured against the frame
+    // interval, not the refresh: under pulldown they are not the same, and a
+    // gap beyond two of them is a pause rather than a step.
+    const double frameGap = std::max(1.0, refreshes) * m_period;
+    const double sinceStep = absolute - m_stepPrevAbsolute;
+    if (m_haveStepPrev && sinceStep > 0.0 && sinceStep < 2.0 * frameGap)
+    {
+      const double step = (clockNow - m_stepPrevClock) - sinceStep;
+      if (std::abs(step) > 0.5 * m_period)
+      {
+        ++m_stepsSeen;
+        if (std::abs(step) > std::abs(m_stepWorst))
+          m_stepWorst = step;
+        if (MayWarn())
+          CLog::Log(LOGWARNING, "CAMLLatency: clock stepped {:+.1f}ms, {:+.1f} refreshes",
+                    step / 1000.0, step / m_period);
+      }
+    }
+    m_stepPrevClock = clockNow;
+    m_stepPrevAbsolute = absolute;
+    m_haveStepPrev = true;
+
     // Inside the blanking interval the kernel extrapolates to the frame about
     // to start, so the age comes back negative and the sequence names the next
     // vblank rather than the last. pts_video still names the last one, so put
@@ -752,16 +785,21 @@ void CAMLLatency::Update(
       // are not meant to agree exactly: the genlock announces its corrections,
       // which stands this check down across the refreshes the fold counts.
       const unsigned int judged = m_shown + m_held + m_lostOn;
-      const bool faulty = m_held > 0 || m_lost > 0 || m_stalls > 0;
+      // A step lands inside the settling window, where the refresh check is
+      // stood down, so it cannot be inferred from the counters beside it.
+      const bool faulty = m_held > 0 || m_lost > 0 || m_stalls > 0 || m_stepsSeen > 0;
       CLog::Log(faulty ? LOGWARNING : LOGDEBUG,
                 "CAMLLatency: {} of {} refreshes judged, {} unwatched, {} repeated, "
-                "{} lost over {}, {} resync, {} stall; alignment swallowed {}{}",
+                "{} lost over {}, {} resync, {} stall, {} stepped (worst {:+.1f}ms); "
+                "alignment swallowed {}{}",
                 judged, m_refreshes, m_unwatched, m_held, m_lost, m_lostOn, m_resyncs,
-                m_stalls,
+                m_stalls, m_stepsSeen, m_stepWorst / 1000.0,
                 haveSwallowed ? fmt::format("{}", swallowedThisWindow) : std::string("-"),
                 m_hidden > 0 ? fmt::format(", {} warnings held back", m_hidden) : "");
       m_refreshes = m_shown = m_held = m_lost = m_lostOn = 0;
       m_unwatched = m_resyncs = m_stalls = 0;
+      m_stepsSeen = 0;
+      m_stepWorst = 0.0;
       m_warned = m_hidden = 0;
 
       m_reports = 0;
