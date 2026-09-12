@@ -2964,8 +2964,17 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
 
     return CDVDVideoCodec::VC_PICTURE;
   }
-  else if (m_drain && m_buffer_level_ready && (queued_frames == 0))
+  // the caller's drain loop neither waits nor reads its message queue
+  else if (m_drain && m_buffer_level_ready &&
+           (queued_frames == 0 ||
+            elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout)))
+  {
+    if (queued_frames)
+      CLog::Log(LOGWARNING, "CAMLCodec::GetPicture: drain stalled, {:d} frames left after {:d}ms",
+        queued_frames, elapsed_since_last_frame.count());
+
     return CDVDVideoCodec::VC_EOF;
+  }
   else if ((m_drain && m_buffer_level_ready) || (buffer_level > (streambuffer ? 100.0f : 10.0f)))
     return CDVDVideoCodec::VC_NONE;
   else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
