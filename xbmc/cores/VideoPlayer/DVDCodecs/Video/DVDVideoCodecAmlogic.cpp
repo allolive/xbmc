@@ -483,6 +483,7 @@ void CDVDVideoCodecAmlogic::Close(void)
     m_Codec->CloseDecoder(), m_Codec = nullptr;
 
   m_videobuffer.iFlags = 0;
+  m_dropRequested = false;
 
   if (m_mpeg2_sequence)
     delete m_mpeg2_sequence, m_mpeg2_sequence = NULL;
@@ -500,6 +501,11 @@ void CDVDVideoCodecAmlogic::Close(void)
 
 bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 {
+  // Enhancement-layer packets are sent with drop false, so taking the flag as it
+  // stands would clear the request halfway through a dual layer run.
+  if (!packet.isELPackage)
+    m_dropRequested = (m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0;
+
   // Handle Input, add demuxer packet to input queue, we must accept it or
   // it will be discarded as VideoPlayerVideo has no concept of "try again".
 
@@ -797,6 +803,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
 
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;
+  m_dropRequested = false;
   m_metadataSequencer.Reset();
   m_pendingMeta = m_streamMeta;
   if (m_bitstream)
@@ -831,6 +838,9 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
       pVideoPicture->videoBuffer->Release();
     pVideoPicture->videoBuffer = nullptr;
     pVideoPicture->SetParams(m_videobuffer);
+
+    if (m_dropRequested)
+      pVideoPicture->iFlags |= DVP_FLAG_DROPPED;
 
     pVideoPicture->videoBuffer = m_videoBufferPool->Get();
     static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
@@ -867,10 +877,8 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
     CLog::Log(LOGDEBUG, LOGVIDEO, "{} {:x}->{:x}",  __func__, m_codecControlFlags, flags);
     m_codecControlFlags = flags;
 
-    if (flags & DVD_CODEC_CTRL_DROP)
-      m_videobuffer.iFlags |= DVP_FLAG_DROPPED;
-    else
-      m_videobuffer.iFlags &= ~DVP_FLAG_DROPPED;
+    if (flags & DVD_CODEC_CTRL_DRAIN)
+      m_dropRequested = false;
 
     if (m_Codec)
       m_Codec->SetDrain((flags & DVD_CODEC_CTRL_DRAIN) != 0);
