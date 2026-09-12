@@ -123,6 +123,8 @@ private:
   bool m_dualLayer{false};
   int m_nalLengthSize{0};
   double m_lastCommitPts{0.0};
+  //! The player's standing drop request, held across enhancement-layer packets.
+  bool m_dropRequested{false};
   AMLFrameMetadata m_streamMeta;
   AMLFrameMetadata m_pendingMeta;
   AMLFrameMetadata m_lastMeta;
