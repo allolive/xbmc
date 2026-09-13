@@ -42,6 +42,7 @@
 #include "windowing/WinSystem.h"
 
 #include <stdlib.h>
+#include <string>
 
 struct StereoModeMap
 {
@@ -158,46 +159,71 @@ RenderStereoMode CStereoscopicsManager::GetNextSupportedStereoMode(
   return mode;
 }
 
+namespace
+{
+struct CompiledRegExp
+{
+  std::string pattern;
+  CRegExp re{true};
+  bool valid{false};
+};
+
+CRegExp* GetCompiledRegExp(CompiledRegExp& compiled, const std::string& pattern)
+{
+  if (!compiled.valid || compiled.pattern != pattern)
+  {
+    compiled.pattern = pattern;
+    compiled.valid = compiled.re.RegComp(pattern);
+  }
+  return compiled.valid ? &compiled.re : nullptr;
+}
+} // namespace
+
 std::string CStereoscopicsManager::DetectStereoModeByString(const std::string &needle) const
 {
   std::string stereoMode;
   const std::string& searchString(needle);
-  CRegExp re(true);
+  const auto& advancedSettings = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
 
-  if (!re.RegComp(CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_stereoscopicregex_3d.c_str()))
+  // Compiled once per thread: a CRegExp holds its last match, so it can't be shared
+  thread_local CompiledRegExp re3d;
+  thread_local CompiledRegExp reSbs;
+  thread_local CompiledRegExp reTab;
+
+  CRegExp* re = GetCompiledRegExp(re3d, advancedSettings->m_stereoscopicregex_3d);
+  if (!re)
   {
-    CLog::Log(
-        LOGERROR, "{}: Invalid RegExp for matching 3d content:'{}'", __FUNCTION__,
-        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_stereoscopicregex_3d);
+    CLog::Log(LOGERROR, "{}: Invalid RegExp for matching 3d content:'{}'", __FUNCTION__,
+              advancedSettings->m_stereoscopicregex_3d);
     return stereoMode;
   }
 
-  if (re.RegFind(searchString) == -1)
+  if (re->RegFind(searchString) == -1)
     return stereoMode;    // no match found for 3d content, assume mono mode
 
-  if (!re.RegComp(CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_stereoscopicregex_sbs.c_str()))
+  re = GetCompiledRegExp(reSbs, advancedSettings->m_stereoscopicregex_sbs);
+  if (!re)
   {
-    CLog::Log(
-        LOGERROR, "{}: Invalid RegExp for matching 3d SBS content:'{}'", __FUNCTION__,
-        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_stereoscopicregex_sbs);
+    CLog::Log(LOGERROR, "{}: Invalid RegExp for matching 3d SBS content:'{}'", __FUNCTION__,
+              advancedSettings->m_stereoscopicregex_sbs);
     return stereoMode;
   }
 
-  if (re.RegFind(searchString) > -1)
+  if (re->RegFind(searchString) > -1)
   {
     stereoMode = "left_right";
     return stereoMode;
   }
 
-  if (!re.RegComp(CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_stereoscopicregex_tab.c_str()))
+  re = GetCompiledRegExp(reTab, advancedSettings->m_stereoscopicregex_tab);
+  if (!re)
   {
-    CLog::Log(
-        LOGERROR, "{}: Invalid RegExp for matching 3d TAB content:'{}'", __FUNCTION__,
-        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_stereoscopicregex_tab);
+    CLog::Log(LOGERROR, "{}: Invalid RegExp for matching 3d TAB content:'{}'", __FUNCTION__,
+              advancedSettings->m_stereoscopicregex_tab);
     return stereoMode;
   }
 
-  if (re.RegFind(searchString) > -1)
+  if (re->RegFind(searchString) > -1)
     stereoMode = "top_bottom";
 
   return stereoMode;
