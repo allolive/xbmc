@@ -138,7 +138,9 @@ class CStreamDetails final : public IArchivable, public ISerializable
 public:
   CStreamDetails() { Reset(); }
   CStreamDetails(const CStreamDetails &that);
+  CStreamDetails(CStreamDetails&& that) noexcept;
   CStreamDetails& operator=(const CStreamDetails &that);
+  CStreamDetails& operator=(CStreamDetails&& that) noexcept;
   bool operator ==(const CStreamDetails &that) const;
   bool operator !=(const CStreamDetails &that) const;
 

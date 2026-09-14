@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <ranges>
+#include <utility>
 
 const float VIDEOASPECT_EPSILON = 0.025f;
 
@@ -401,6 +402,32 @@ CStreamDetails::CStreamDetails(const CStreamDetails &that)
   m_pBestAudio = nullptr;
   m_pBestSubtitle = nullptr;
   *this = that;
+}
+
+CStreamDetails::CStreamDetails(CStreamDetails&& that) noexcept
+  : m_vecItems(std::move(that.m_vecItems)),
+    m_pBestVideo(std::exchange(that.m_pBestVideo, nullptr)),
+    m_pBestAudio(std::exchange(that.m_pBestAudio, nullptr)),
+    m_pBestSubtitle(std::exchange(that.m_pBestSubtitle, nullptr))
+{
+  that.m_vecItems.clear();
+  for (const auto& item : m_vecItems)
+    item->m_pParent = this;
+}
+
+CStreamDetails& CStreamDetails::operator=(CStreamDetails&& that) noexcept
+{
+  if (this != &that)
+  {
+    m_vecItems = std::move(that.m_vecItems);
+    that.m_vecItems.clear();
+    m_pBestVideo = std::exchange(that.m_pBestVideo, nullptr);
+    m_pBestAudio = std::exchange(that.m_pBestAudio, nullptr);
+    m_pBestSubtitle = std::exchange(that.m_pBestSubtitle, nullptr);
+    for (const auto& item : m_vecItems)
+      item->m_pParent = this;
+  }
+  return *this;
 }
 
 void CStreamDetails::AddStream(CStreamDetail *item)
