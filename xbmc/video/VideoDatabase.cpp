@@ -4827,7 +4827,7 @@ bool CVideoDatabase::GetStreamDetailsForFiles(const std::vector<int>& fileIds,
     {
       if (details.contains(id))
         continue;
-      // Move the node, not the value: each stream points back at its CStreamDetails
+      // Hand the entry over as a node, so it is neither copied nor moved
       auto node = found.extract(id);
       const auto it =
           node ? details.insert(std::move(node)).position : details.try_emplace(id).first;
