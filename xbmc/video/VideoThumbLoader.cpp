@@ -219,7 +219,7 @@ bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
       if (prefetched->second.HasItems())
       {
         CVideoInfoTag& tag = *pItem->GetVideoInfoTag();
-        tag.m_streamDetails = prefetched->second;
+        tag.m_streamDetails = std::move(prefetched->second);
         if (tag.m_streamDetails.GetVideoDuration() > 0)
           tag.SetDuration(tag.m_streamDetails.GetVideoDuration());
         pItem->SetInvalid();
