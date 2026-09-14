@@ -23,6 +23,21 @@
 
 const float VIDEOASPECT_EPSILON = 0.025f;
 
+namespace
+{
+bool IsWorseSubtitleLanguage(const KODI::UTILS::CLanguageTag& language,
+                             const KODI::UTILS::CLanguageTag& other,
+                             const KODI::UTILS::CLanguageTag& preferred)
+{
+  if (language.Matches(other))
+    return false;
+
+  // the best subtitle should be the one in the user's preferred language
+  // If preferred language is set to "original" this is "eng"
+  return language.IsEmpty() || preferred.Matches(other);
+}
+} // namespace
+
 CStreamDetail::Source CStreamDetail::GetSource() const
 {
   return m_source;
@@ -218,16 +233,10 @@ bool CStreamDetailSubtitle::IsWorseThan(const CStreamDetail& that) const
   if (that.m_eType != CStreamDetail::SUBTITLE)
     return true;
 
-  const KODI::UTILS::CLanguageTag language{KODI::UTILS::CLanguageTag::Parse(m_strLanguage)};
-  const KODI::UTILS::CLanguageTag other{KODI::UTILS::CLanguageTag::Parse(
-      static_cast<const CStreamDetailSubtitle&>(that).m_strLanguage)};
-
-  if (language.Matches(other))
-    return false;
-
-  // the best subtitle should be the one in the user's preferred language
-  // If preferred language is set to "original" this is "eng"
-  return language.IsEmpty() || g_langInfo.GetSubtitleLanguage(true).Matches(other);
+  const auto& other = static_cast<const CStreamDetailSubtitle&>(that);
+  return IsWorseSubtitleLanguage(KODI::UTILS::CLanguageTag::Parse(m_strLanguage),
+                                 KODI::UTILS::CLanguageTag::Parse(other.m_strLanguage),
+                                 g_langInfo.GetSubtitleLanguage(true));
 }
 
 CStreamDetailVideo& CStreamDetailVideo::operator=(const CStreamDetailVideo& that)
@@ -769,6 +778,10 @@ void CStreamDetails::DetermineBestStreams(void)
   m_pBestAudio = NULL;
   m_pBestSubtitle = NULL;
 
+  // A subtitle's language is parsed once, not on every comparison
+  const KODI::UTILS::CLanguageTag preferredSubtitle = g_langInfo.GetSubtitleLanguage(true);
+  KODI::UTILS::CLanguageTag bestSubtitleLanguage;
+
   for (const auto &iter : m_vecItems)
   {
     const CStreamDetail **champion;
@@ -781,8 +794,17 @@ void CStreamDetails::DetermineBestStreams(void)
       champion = (const CStreamDetail **)&m_pBestAudio;
       break;
     case CStreamDetail::SUBTITLE:
-      champion = (const CStreamDetail **)&m_pBestSubtitle;
-      break;
+    {
+      const auto& subtitle = static_cast<const CStreamDetailSubtitle&>(*iter);
+      auto language = KODI::UTILS::CLanguageTag::Parse(subtitle.m_strLanguage);
+      if (!m_pBestSubtitle ||
+          IsWorseSubtitleLanguage(bestSubtitleLanguage, language, preferredSubtitle))
+      {
+        m_pBestSubtitle = &subtitle;
+        bestSubtitleLanguage = std::move(language);
+      }
+      continue;
+    }
     default:
       champion = NULL;
     }  /* switch type */
