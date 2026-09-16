@@ -1212,6 +1212,8 @@ protected:
   int SetFileForUnknown(const std::string& fileAndPath, int oldIdFile, int newIdFile);
 
 private:
+  static bool AddStreamDetailRow(dbiplus::Dataset& ds, CStreamDetails& details);
+
   void CreateTables() override;
   void CreateAnalytics() override;
   void UpdateTables(int version) override;
