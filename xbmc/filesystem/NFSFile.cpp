@@ -508,6 +508,12 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
   if (!lock.owns_lock())
     return;
 
+  // Only an NFSv4 lease needs the read. NFSv3 is stateless and libnfs reconnects a
+  // dropped connection, while a read to a server that stopped answering would hold
+  // the main thread until it answers.
+  if (!pContext || nfs_get_version(pContext) < 4)
+    return;
+
   CLog::LogF(LOGDEBUG, "sending keep alive after {}s.",
              std::chrono::duration_cast<std::chrono::seconds>(KEEP_ALIVE_TIMEOUT).count());
 
