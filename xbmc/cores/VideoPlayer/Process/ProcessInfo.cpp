@@ -61,10 +61,25 @@ void CProcessInfo::SetDataCache(CDataCacheCore *cache)
 //******************************************************************************
 // video codec
 //******************************************************************************
+void CProcessInfo::SetVideoCodecBuffersData(bool buffersData)
+{
+  std::unique_lock lock(m_videoCodecSection);
+
+  m_videoCodecBuffersData = buffersData;
+}
+
+bool CProcessInfo::GetVideoCodecBuffersData() const
+{
+  std::unique_lock lock(m_videoCodecSection);
+
+  return m_videoCodecBuffersData;
+}
+
 void CProcessInfo::ResetVideoCodecInfo()
 {
   std::unique_lock lock(m_videoCodecSection);
 
+  m_videoCodecBuffersData = false;
   m_videoIsHWDecoder = false;
   m_videoDecoderName = "unknown";
   m_videoDeintMethod = "unknown";
@@ -104,6 +119,8 @@ void CProcessInfo::SetVideoDecoderName(const std::string &name, bool isHw)
 {
   std::unique_lock lock(m_videoCodecSection);
 
+  // A codec that holds data of its own says so after naming itself.
+  m_videoCodecBuffersData = false;
   m_videoIsHWDecoder = isHw;
   m_videoDecoderName = name;
 
