@@ -55,6 +55,7 @@ struct SCacheStatus
   uint32_t maxrate; /**< maximum allowed read(fill) rate (bytes/second) */
   uint32_t currate; /**< average read rate (bytes/second) since last position change */
   uint32_t lowrate; /**< low speed read rate (bytes/second) (if any, else 0) */
+  bool endOfInput{false}; /**< the source has no more data to give */
 };
 
 enum class CacheBufferMode

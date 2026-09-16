@@ -742,6 +742,7 @@ int CFileCache::IoControl(IOControl request, void* param)
     status->maxrate = m_writeRate;
     status->currate = m_writeRateActual;
     status->lowrate = m_writeRateLowSpeed;
+    status->endOfInput = m_pCache->IsEndOfInput();
     m_writeRateLowSpeed = 0; // Reset low speed condition
     return 0;
   }
