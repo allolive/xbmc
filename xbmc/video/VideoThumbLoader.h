@@ -13,6 +13,8 @@
 #include "utils/Artwork.h"
 
 #include <map>
+#include <set>
+#include <span>
 #include <vector>
 
 class CStreamDetails;
@@ -86,5 +88,12 @@ protected:
   const KODI::ART::Artwork& GetArtFromCache(const std::string& mediaType, const int id);
 
 private:
+  void PrefetchCachedWindow(const CFileItem* item);
+  void PrefetchArt(std::span<const CFileItemPtr> items);
+  bool GetItemArt(int id, const MediaType& mediaType, KODI::ART::Artwork& artwork);
+
+  std::set<std::pair<MediaType, int>> m_parentArtKeys;
+  size_t m_cachedWindowStart{0};
+
   int SetDetailsForItem(CVideoInfoTag& details, const KODI::ART::Artwork& artwork);
 };
