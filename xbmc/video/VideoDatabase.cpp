@@ -5428,6 +5428,52 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
   return false;
 }
 
+bool CVideoDatabase::GetVideoSettingsForFiles(
+    const std::vector<int>& fileIds,
+    std::unordered_map<int, std::optional<CVideoSettings>>& settings,
+    const std::function<bool()>& abort /* = {} */)
+{
+  if (fileIds.empty())
+    return true;
+  if (nullptr == m_pDB)
+    return false;
+
+  std::unique_ptr<Dataset> pDS(m_pDB->CreateDataset());
+  if (!pDS)
+    return false;
+
+  const auto readChunk = [&](std::span<const int> ids, const std::string& idList)
+  {
+    std::unordered_map<int, CVideoSettings> found;
+    try
+    {
+      pDS->query(PrepareSQL("SELECT * FROM settings WHERE idFile IN (%s)", idList.c_str()));
+      while (!pDS->eof())
+      {
+        const auto [it, inserted] = found.try_emplace(pDS->fv("idFile").get_asInt());
+        if (inserted)
+          ReadVideoSettingsRow(*pDS, it->second);
+        pDS->next();
+      }
+      pDS->close();
+    }
+    catch (...)
+    {
+      CLog::LogF(LOGERROR, "({} ids) failed", ids.size());
+      return false;
+    }
+
+    for (const int id : ids)
+    {
+      auto node = found.extract(id);
+      settings.try_emplace(id, node ? std::optional(std::move(node.mapped())) : std::nullopt);
+    }
+    return true;
+  };
+
+  return ForEachIdChunk(fileIds, abort, readChunk);
+}
+
 void CVideoDatabase::SetVideoSettings(const CFileItem &item, const CVideoSettings &settings)
 {
   int idFile = AddFile(item);
