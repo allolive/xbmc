@@ -218,6 +218,18 @@ void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
     if (m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE)
       size = m_coreSize;
 
+    if (m_defeatAC3DialNorm && (m_info.m_type == CAEStreamInfo::STREAM_TYPE_AC3 ||
+                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_EAC3))
+      DefeatAC3DialNorm(m_buffer, size);
+
+    if (m_defeatDTSDialNorm && (m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTS_512 ||
+                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTS_1024 ||
+                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTS_2048 ||
+                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD ||
+                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_CORE ||
+                                m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_MA))
+      DefeatDTSDialNorm(m_buffer, size);
+
     // make sure the buffer is allocated and big enough
     if (!*buffer || !bufferSize || *bufferSize < size)
     {
@@ -290,6 +302,454 @@ unsigned int CAEStreamParser::DetectType(uint8_t* data, unsigned int size)
   }
 
   return possible ? possible : skipped;
+}
+
+// AC-3 CRC helpers, as in FFmpeg libavcodec/ac3enc.c
+#define AC3_CRC16_POLY ((1 << 0) | (1 << 2) | (1 << 15) | (1 << 16))
+
+static unsigned int AC3MulPoly(unsigned int a, unsigned int b, unsigned int poly)
+{
+  unsigned int c = 0;
+  while (a)
+  {
+    if (a & 1)
+      c ^= b;
+    a >>= 1;
+    b <<= 1;
+    if (b & (1 << 16))
+      b ^= poly;
+  }
+  return c;
+}
+
+static unsigned int AC3PowPoly(unsigned int a, unsigned int n, unsigned int poly)
+{
+  unsigned int r = 1;
+  while (n)
+  {
+    if (n & 1)
+      r = AC3MulPoly(r, a, poly);
+    a = AC3MulPoly(a, a, poly);
+    n >>= 1;
+  }
+  return r;
+}
+
+static inline uint16_t AC3Bswap16(uint16_t x)
+{
+  return static_cast<uint16_t>((x >> 8) | (x << 8));
+}
+
+// E-AC-3 BSI up to addbsi, per FFmpeg ac3_parser.c. True when the
+// extension_type_a (JOC) flag is set or the header cannot be parsed.
+static bool EAC3HasJOC(const uint8_t* frame, unsigned int frameBytes)
+{
+  const unsigned int limit = (frameBytes - 2) * 8;
+  unsigned int pos = 16;
+  bool overrun = false;
+  auto read = [&](unsigned int n) -> uint32_t
+  {
+    uint32_t value = 0;
+    if (pos + n > limit)
+    {
+      overrun = true;
+      return 0;
+    }
+    while (n--)
+    {
+      value = (value << 1) | ((frame[pos >> 3] >> (7 - (pos & 7))) & 1);
+      ++pos;
+    }
+    return value;
+  };
+  auto skip = [&](unsigned int n)
+  {
+    pos += n;
+    if (pos > limit)
+      overrun = true;
+  };
+
+  const unsigned int strmtyp = read(2);
+  skip(3 + 11); // substreamid, frmsiz
+  const unsigned int fscod = read(2);
+  unsigned int numblks = 6;
+  if (fscod == 3)
+    skip(2); // fscod2
+  else
+    numblks = AC3BlkCod[read(2)];
+  const unsigned int acmod = read(3);
+  const unsigned int lfeon = read(1);
+  skip(5); // bsid
+  for (unsigned int i = 0; i < (acmod ? 1u : 2u); i++)
+  {
+    skip(5); // dialnorm
+    if (read(1))
+      skip(8); // compr
+  }
+  if (strmtyp == 1 && read(1))
+    skip(16); // chanmap
+  if (read(1)) // mixmdate
+  {
+    if (acmod > 2)
+    {
+      skip(2); // dmixmod
+      if (acmod & 1)
+        skip(6); // ltrtcmixlev, lorocmixlev
+      if (acmod & 4)
+        skip(6); // ltrtsurmixlev, lorosurmixlev
+    }
+    if (lfeon && read(1))
+      skip(5); // lfemixlevcod
+    if (strmtyp == 0)
+    {
+      for (unsigned int i = 0; i < (acmod ? 1u : 2u); i++)
+        if (read(1))
+          skip(6); // pgmscl
+      if (read(1))
+        skip(6); // extpgmscl
+      switch (read(2)) // mixdef
+      {
+        case 1:
+          skip(5);
+          break;
+        case 2:
+          skip(12);
+          break;
+        case 3:
+          skip((read(5) + 2) * 8);
+          break;
+      }
+      if (acmod < 2)
+        for (unsigned int i = 0; i < (acmod ? 1u : 2u); i++)
+          if (read(1))
+            skip(14); // paninfo
+      if (read(1)) // frmmixcfginfoe
+      {
+        for (unsigned int i = 0; i < numblks; i++)
+          if (numblks == 1 || read(1))
+            skip(5); // blkmixcfginfo
+      }
+    }
+  }
+  if (read(1)) // infomdate
+  {
+    skip(3 + 1 + 1); // bsmod, copyrightb, origbs
+    if (acmod == 2)
+      skip(4); // dsurmod, dheadphonmod
+    if (acmod >= 6)
+      skip(2); // dsurexmod
+    for (unsigned int i = 0; i < (acmod ? 1u : 2u); i++)
+      if (read(1))
+        skip(8); // mixlevel, roomtyp, adconvtyp
+    if (fscod != 3)
+      skip(1); // sourcefscod
+  }
+  if (strmtyp == 0 && numblks != 6)
+    skip(1); // convsync
+  if (strmtyp == 2 && (numblks == 6 || read(1)))
+    skip(6); // frmsizecod
+  if (read(1)) // addbsie
+  {
+    skip(6 + 7); // addbsil, first addbsi bits
+    if (read(1))
+      return true;
+  }
+  return overrun;
+}
+
+void CAEStreamParser::DefeatAC3DialNorm(uint8_t* data, unsigned int size)
+{
+  const AVCRC* crcTable = av_crc_get_table(AV_CRC_16_ANSI);
+  unsigned int offset = 0;
+
+  while (offset + 8 <= size)
+  {
+    if (data[offset] != 0x0b || data[offset + 1] != 0x77)
+      break;
+
+    uint8_t* frame = data + offset;
+    uint8_t bsid = frame[5] >> 3;
+    unsigned int frameBytes = 0;
+
+    if (bsid <= 10)
+    {
+      uint8_t fscod = frame[4] >> 6;
+      uint8_t frmsizecod = frame[4] & 0x3F;
+      if (fscod >= 3 || frmsizecod > 37)
+        break;
+
+      unsigned int bitRate = AC3Bitrates[frmsizecod >> 1];
+      unsigned int framewords = 0;
+      switch (fscod)
+      {
+        case 0:
+          framewords = bitRate * 2;
+          break;
+        case 1:
+          framewords = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0));
+          break;
+        case 2:
+          framewords = bitRate * 4;
+          break;
+      }
+      frameBytes = framewords * 2;
+      if (offset + frameBytes > size)
+        break;
+
+      // dialnorm follows acmod, the optional mix levels / dsurmod and lfeon
+      uint8_t acmod = frame[6] >> 5;
+      unsigned int shift = 15;
+      if ((acmod & 0x1) && (acmod != 0x1))
+        shift -= 2;
+      if (acmod & 0x4)
+        shift -= 2;
+      if (acmod == 0x2)
+        shift -= 2;
+
+      // leave frames with a bad CRC untouched
+      uint32_t bits = (frame[6] << 16) | (frame[7] << 8) | frame[8];
+      if (((bits >> shift) & 0x1F) != 31 &&
+          av_crc(crcTable, 0, frame + 2, frameBytes - 2) == 0)
+      {
+        bits |= 0x1FU << shift;
+        frame[6] = (bits >> 16) & 0xFF;
+        frame[7] = (bits >> 8) & 0xFF;
+        frame[8] = bits & 0xFF;
+
+        // crc1 brings the CRC back to zero at 5/8, so crc2 stays valid
+        unsigned int frameSize58 = ((frameBytes >> 2) + (frameBytes >> 4)) << 1;
+        uint16_t crc1 = AC3Bswap16(av_crc(crcTable, 0, frame + 4, frameSize58 - 4));
+        unsigned int crcInv =
+            AC3PowPoly((AC3_CRC16_POLY >> 1), (8 * frameSize58) - 16, AC3_CRC16_POLY);
+        crc1 = static_cast<uint16_t>(AC3MulPoly(crcInv, crc1, AC3_CRC16_POLY));
+        frame[2] = (crc1 >> 8) & 0xFF;
+        frame[3] = crc1 & 0xFF;
+      }
+    }
+    else if (bsid <= 16)
+    {
+      uint8_t strmtyp = frame[2] >> 6;
+      frameBytes = ((((frame[2] & 0x7) << 8) | frame[3]) + 1) * 2;
+      if (offset + frameBytes > size)
+        break;
+
+      // leave dependent substreams and DD+ Atmos (JOC) alone
+      uint8_t dialnorm = ((frame[5] & 0x07) << 2) | (frame[6] >> 6);
+      if (strmtyp != 1 && frameBytes >= 10 && dialnorm != 31 &&
+          !EAC3HasJOC(frame, frameBytes))
+      {
+        const uint8_t delta[2] = {static_cast<uint8_t>(~frame[5] & 0x07),
+                                  static_cast<uint8_t>(~frame[6] & 0xC0)};
+        frame[5] |= 0x07;
+        frame[6] |= 0xC0;
+
+        // CRC is linear: update the stored crc2 by the CRC of the changed bits
+        uint32_t dcrc = av_crc(crcTable, 0, delta, 2);
+        for (unsigned int i = 0; i < frameBytes - 9; i++)
+          dcrc = crcTable[static_cast<uint8_t>(dcrc)] ^ (dcrc >> 8);
+
+        uint16_t crc2 = ((frame[frameBytes - 2] << 8) | frame[frameBytes - 1]) ^
+                        AC3Bswap16(static_cast<uint16_t>(dcrc));
+        if (crc2 == 0x0B77)
+        {
+          frame[frameBytes - 3] ^= 0x1;
+          crc2 ^= 0x8005;
+        }
+        frame[frameBytes - 2] = (crc2 >> 8) & 0xFF;
+        frame[frameBytes - 1] = crc2 & 0xFF;
+      }
+    }
+    else
+      break;
+
+    offset += frameBytes;
+  }
+}
+
+static uint32_t DTSReadBits(const uint8_t* data, unsigned int& pos, unsigned int n)
+{
+  uint32_t value = 0;
+  while (n--)
+  {
+    value = (value << 1) | ((data[pos >> 3] >> (7 - (pos & 7))) & 1);
+    ++pos;
+  }
+  return value;
+}
+
+static void DTSWriteBits(uint8_t* data, unsigned int pos, unsigned int n, uint32_t value)
+{
+  for (unsigned int i = 0; i < n; ++i)
+  {
+    const uint8_t mask = 1 << (7 - ((pos + i) & 7));
+    if ((value >> (n - 1 - i)) & 1)
+      data[(pos + i) >> 3] |= mask;
+    else
+      data[(pos + i) >> 3] &= ~mask;
+  }
+}
+
+static unsigned int DTSPopCount(uint32_t x)
+{
+  unsigned int count = 0;
+  for (; x; x >>= 1)
+    count += x & 1;
+  return count;
+}
+
+// CRC-16-CCITT (poly 0x1021, init 0xFFFF), the EXSS header CRC
+static uint16_t DTSCrc16(const uint8_t* data, unsigned int len)
+{
+  uint16_t crc = 0xFFFF;
+  for (unsigned int i = 0; i < len; ++i)
+  {
+    crc ^= static_cast<uint16_t>(data[i]) << 8;
+    for (int b = 0; b < 8; ++b)
+      crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0x1021)
+                           : static_cast<uint16_t>(crc << 1);
+  }
+  return crc;
+}
+
+// DTS dialnorm is attenuation in dB, so 0 defeats it. Only the 16-bit BE core
+// is handled; layout per ETSI TS 102 114 and FFmpeg dca_exss.c.
+void CAEStreamParser::DefeatDTSDialNorm(uint8_t* data, unsigned int size)
+{
+  if (size < 16)
+    return;
+
+  const uint32_t sync = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
+  if (sync != DTS_PREAMBLE_16BE)
+    return;
+
+  // core DNG means attenuation for VERNUM 6/7; skip when there is a header CRC
+  unsigned int pos = 32;
+  DTSReadBits(data, pos, 1 + 5); // FTYPE, SHORT
+  const unsigned int cpf = DTSReadBits(data, pos, 1);
+  DTSReadBits(data, pos, 7); // NBLKS
+  const unsigned int fsize = DTSReadBits(data, pos, 14) + 1;
+  DTSReadBits(data, pos, 6 + 4 + 5); // AMODE, SFREQ, RATE
+  DTSReadBits(data, pos, 1 + 1 + 1 + 1 + 1); // MIX, DYNF, TIMEF, AUXF, HDCD
+  DTSReadBits(data, pos, 3 + 1 + 1 + 2 + 1); // EXT_AUDIO_ID, EXT_AUDIO, ASPF, LFF, HFLAG
+  if (cpf)
+    DTSReadBits(data, pos, 16); // HCRC
+  DTSReadBits(data, pos, 1); // FILTS
+  const unsigned int vernum = DTSReadBits(data, pos, 4);
+  DTSReadBits(data, pos, 2 + 3 + 1 + 1); // CHIST, PCMR, SUMF, SUMS
+  const unsigned int dngPos = pos;
+  if (cpf == 0 && (vernum == 6 || vernum == 7) && DTSReadBits(data, pos, 4) != 0)
+    DTSWriteBits(data, dngPos, 4, 0);
+
+  // extension substream: nuDialNormCode of the first asset
+  if (fsize + 16 > size)
+    return;
+  uint8_t* exss = data + fsize;
+  const uint32_t exssSync = (exss[0] << 24) | (exss[1] << 16) | (exss[2] << 8) | exss[3];
+  if (exssSync != DTS_PREAMBLE_HD)
+    return;
+
+  unsigned int ep = 32;
+  DTSReadBits(exss, ep, 8); // nuUserDefinedBits
+  const unsigned int extSSIndex = DTSReadBits(exss, ep, 2);
+  const unsigned int wideHeader = DTSReadBits(exss, ep, 1);
+  const unsigned int fsizeBits = wideHeader ? 20 : 16;
+  const unsigned int headerSize = DTSReadBits(exss, ep, wideHeader ? 12 : 8) + 1;
+  if (headerSize < 7 || fsize + headerSize > size)
+    return;
+
+  // only touch a header whose CRC validates
+  if (DTSCrc16(exss + 5, headerSize - 5) != 0)
+    return;
+  // a valid CRC does not make the layout sane: never read past the header
+  const unsigned int limit = (headerSize - 2) * 8;
+  auto read = [&](unsigned int n) -> uint32_t {
+    if (ep + n > limit)
+    {
+      ep = limit + 1;
+      return 0;
+    }
+    return DTSReadBits(exss, ep, n);
+  };
+
+  read(fsizeBits); // nuExtSSFsize
+  const unsigned int staticFields = read(1);
+  unsigned int numAssets = 1;
+  if (staticFields)
+  {
+    read(2 + 3); // nuRefClockCode, nuExSSFrameDurationCode
+    if (read(1))
+      read(32 + 4); // nuTimeStamp, nLSB
+    const unsigned int numPresentations = read(3) + 1;
+    numAssets = read(3) + 1;
+    uint32_t masks[8] = {};
+    for (unsigned int i = 0; i < numPresentations; ++i)
+      masks[i] = read(extSSIndex + 1);
+    for (unsigned int i = 0; i < numPresentations; ++i)
+      read(DTSPopCount(masks[i]) * 8); // nuActiveAssetMask
+    if (read(1)) // bMixMetadataEnbl
+      return;
+  }
+  for (unsigned int i = 0; i < numAssets; ++i)
+    read(fsizeBits); // nuAssetFsize
+
+  read(9 + 3); // nuAssetDescriptFsize, nuAssetIndex
+  if (staticFields)
+  {
+    if (read(1))
+      read(4); // nuAssetTypeDescriptor
+    if (read(1))
+      read(24); // LanguageDescriptor
+    if (read(1))
+    {
+      const unsigned int textBytes = read(10) + 1;
+      ep = std::min(ep + textBytes * 8, limit + 1); // InfoTextString
+    }
+    read(5 + 4); // nuBitResolution, nuMaxSampleRate
+    const unsigned int numChannels = read(8) + 1;
+    if (read(1)) // bOne2OneMapChannels2Speakers
+    {
+      if (numChannels > 2)
+        read(1); // bEmbeddedStereoFlag
+      if (numChannels > 6)
+        read(1); // bEmbeddedSixChFlag
+      unsigned int maskBits = 0;
+      if (read(1)) // bSpkrMaskEnabled
+      {
+        maskBits = (read(2) + 1) << 2;
+        read(maskBits); // nuSpkrActivityMask
+      }
+      const unsigned int remapSets = read(3);
+      if (remapSets && !maskBits)
+        return;
+      uint32_t layouts[8] = {};
+      for (unsigned int i = 0; i < remapSets; ++i)
+        layouts[i] = read(maskBits);
+      for (unsigned int i = 0; i < remapSets; ++i)
+      {
+        const unsigned int decChannels = read(5) + 1;
+        // some mask bits stand for a speaker pair
+        const unsigned int speakers =
+            DTSPopCount((layouts[i] & 0xffff) | ((layouts[i] & 0xae66) << 16));
+        for (unsigned int c = 0; c < speakers; ++c)
+          read(DTSPopCount(read(decChannels)) * 5);
+      }
+    }
+    else
+      read(3); // nuRepresentationType
+  }
+  if (read(1)) // bDRCCoefPresent
+    read(8);
+  if (!read(1)) // bDialNormPresent
+    return;
+
+  const unsigned int dnPos = ep;
+  if (dnPos + 5 > limit || read(5) == 0)
+    return;
+
+  DTSWriteBits(exss, dnPos, 5, 0);
+  const uint16_t crc = DTSCrc16(exss + 5, headerSize - 2 - 5);
+  exss[headerSize - 2] = (crc >> 8) & 0xFF;
+  exss[headerSize - 1] = crc & 0xFF;
 }
 
 bool CAEStreamParser::TrySyncAC3(uint8_t* data,
@@ -788,6 +1248,19 @@ unsigned int CAEStreamParser::SyncTrueHD(uint8_t* data, unsigned int size)
       crc ^= (data[4 + major_sync_size - 3] << 8) | data[4 + major_sync_size - 4];
       if (((data[4 + major_sync_size - 1] << 8) | data[4 + major_sync_size - 2]) != crc)
         continue;
+
+      // 16ch (Atmos) dialogue_norm in extra_channel_meaning, 31 = 0 dB
+      if (m_defeatTrueHDDialNorm && (data[21] & 0x80) && (data[29] & 1) && (data[30] >> 4) &&
+          (((data[30] & 0x0F) << 1) | (data[31] >> 7)) != 31)
+      {
+        data[30] |= 0x0F;
+        data[31] |= 0x80;
+
+        crc = av_crc(m_crcTrueHD, 0, data + 4, major_sync_size - 4);
+        crc ^= (data[4 + major_sync_size - 3] << 8) | data[4 + major_sync_size - 4];
+        data[4 + major_sync_size - 2] = crc & 0xFF;
+        data[4 + major_sync_size - 1] = (crc >> 8) & 0xFF;
+      }
 
       // get the sample rate and substreams, we have a valid master audio unit
       m_info.m_sampleRate = (rate & 0x8 ? 44100 : 48000) << (rate & 0x7);
