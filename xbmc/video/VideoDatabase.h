@@ -524,6 +524,19 @@ public:
   bool GetStreamDetails(CFileItem& item);
   bool GetStreamDetails(CVideoInfoTag& tag);
   bool GetStreamDetails(const std::string& filenameAndPath, CStreamDetails& details);
+
+  /*!
+   * \brief Retrieve the stream details of many files with a few queries
+   * \param fileIds ids of the files, looked up in chunks
+   * \param details receives one entry per id that was looked up, empty if the file has no stored
+   * stream details. Ids of a chunk that failed or was not reached are left out, and entries already
+   * in the map are kept.
+   * \param abort optional, checked before each chunk; the lookup stops when it returns true
+   * \return true if every chunk was looked up, false if the lookup was stopped or failed
+   */
+  bool GetStreamDetailsForFiles(const std::vector<int>& fileIds,
+                                std::unordered_map<int, CStreamDetails>& details,
+                                const std::function<bool()>& abort = {});
   bool GetDetailsByTypeAndId(CFileItem& item, VideoDbContentType type, int id);
   CVideoInfoTag GetDetailsByTypeAndId(VideoDbContentType type, int id);
 
