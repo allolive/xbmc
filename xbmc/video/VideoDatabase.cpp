@@ -4789,6 +4789,56 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
   return retVal;
 }
 
+bool CVideoDatabase::GetStreamDetailsForFiles(const std::vector<int>& fileIds,
+                                              std::unordered_map<int, CStreamDetails>& details,
+                                              const std::function<bool()>& abort /* = {} */)
+{
+  if (fileIds.empty())
+    return true;
+  if (nullptr == m_pDB)
+    return false;
+
+  std::unique_ptr<Dataset> pDS(m_pDB->CreateDataset());
+  if (!pDS)
+    return false;
+
+  const auto readChunk = [&](std::span<const int> ids, const std::string& idList)
+  {
+    std::unordered_map<int, CStreamDetails> found;
+    try
+    {
+      const std::string sql =
+          PrepareSQL("SELECT * FROM streamdetails WHERE idFile IN (%s)", idList.c_str());
+      pDS->query(sql);
+      while (!pDS->eof())
+      {
+        AddStreamDetailRow(*pDS, found[pDS->fv(0).get_asInt()]);
+        pDS->next();
+      }
+      pDS->close();
+    }
+    catch (...)
+    {
+      CLog::LogF(LOGERROR, "({} ids) failed", ids.size());
+      return false;
+    }
+
+    for (const int id : ids)
+    {
+      if (details.contains(id))
+        continue;
+      // Move the node, not the value: each stream points back at its CStreamDetails
+      auto node = found.extract(id);
+      const auto it =
+          node ? details.insert(std::move(node)).position : details.try_emplace(id).first;
+      it->second.DetermineBestStreams();
+    }
+    return true;
+  };
+
+  return ForEachIdChunk(fileIds, abort, readChunk);
+}
+
 bool CVideoDatabase::GetResumePoint(CVideoInfoTag& tag)
 {
   if (tag.m_iFileId < 0)
