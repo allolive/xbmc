@@ -3106,7 +3106,17 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
     return CDVDVideoCodec::VC_ERROR;
 
   if (m_drain)
-    queued_frames = m_amlVideoFile->IOControl(AMLVIDEO_IOC_GET_VFQ, &queued_frames) == 0 ? queued_frames : 0;
+  {
+    PosixFilePtr amlVideoFile;
+    {
+      std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
+      amlVideoFile = m_amlVideoFile;
+    }
+
+    if (amlVideoFile)
+      queued_frames =
+          amlVideoFile->IOControl(AMLVIDEO_IOC_GET_VFQ, &queued_frames) == 0 ? queued_frames : 0;
+  }
 
   if (m_buffer_level_ready && (buffer_level > m_minimum_buffer_level || (queued_frames > 0)) && (ret = DequeueBuffer()) == 0)
   {
