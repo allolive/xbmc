@@ -952,6 +952,10 @@ bool CVideoPlayer::OpenInputStream()
   m_clock.Reset();
   m_dvd.Clear();
 
+  // A stop that came while m_pInputStream was being created found nothing to abort.
+  if (m_bAbortRequest)
+    m_pInputStream->Abort();
+
   return true;
 }
 

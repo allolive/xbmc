@@ -28,6 +28,7 @@ CInputStreamMultiSource::~CInputStreamMultiSource()
 
 void CInputStreamMultiSource::Abort()
 {
+  m_aborted = true;
   for (const auto& iter : m_InputStreams)
     iter->Abort();
 }
@@ -119,6 +120,8 @@ bool CInputStreamMultiSource::Open()
       CLog::Log(LOGERROR, "CDVDPlayer::OpenInputStream - error opening file [{}]", m_filenames[i]);
       continue;
     }
+    if (m_aborted)
+      inputstream->Abort();
     m_InputStreams.push_back(inputstream);
   }
   return !m_InputStreams.empty();
