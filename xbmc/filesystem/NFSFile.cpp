@@ -473,10 +473,14 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
   if (!pContext)// this should normally never happen - paranoia
     pContext = m_pNfsContext;
 
+  // The caller holds keepAliveLock, and CNFSFile::Close takes the two locks the other
+  // way round, so waiting here can deadlock the main thread. Skip a busy round.
+  std::unique_lock lock(*this, std::try_to_lock);
+  if (!lock.owns_lock())
+    return;
+
   CLog::LogF(LOGDEBUG, "sending keep alive after {}s.",
              std::chrono::duration_cast<std::chrono::seconds>(KEEP_ALIVE_TIMEOUT).count());
-
-  std::unique_lock lock(*this);
 
   nfs_lseek(pContext, _pFileHandle, 0, SEEK_CUR, &offset);
 
