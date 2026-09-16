@@ -36,6 +36,8 @@ public:
   void SetVideoDecoderName(const std::string &name, bool isHw);
   std::string GetVideoDecoderName();
   bool IsVideoHwDecoder();
+  void SetVideoCodecBuffersData(bool buffersData);
+  bool GetVideoCodecBuffersData() const;
   void SetVideoDeintMethod(const std::string &method);
   std::string GetVideoDeintMethod();
   void SetVideoPixelFormat(const std::string &pixFormat);
@@ -149,6 +151,7 @@ protected:
 
   // player video info
   bool m_videoIsHWDecoder;
+  bool m_videoCodecBuffersData{false};
   std::string m_videoDecoderName;
   std::string m_videoDeintMethod;
   std::string m_videoPixelFormat;
