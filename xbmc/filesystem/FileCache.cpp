@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cerrno>
 #include <inttypes.h>
 #include <memory>
 #include <stdexcept>
@@ -410,8 +411,9 @@ void CFileCache::Process()
       iRead = m_source->Read(buffer.get(), maxSourceRead);
     if (iRead <= 0)
     {
-      // Check for actual EOF and retry as long as we still have data in our cache
-      if (m_writePos < m_fileSize && m_pCache->WaitForData(0, 0ms) > 0)
+      // A failed read before the end of the file is a stall, so retry it even once the
+      // player has caught up.
+      if (m_writePos < m_fileSize && (iRead < 0 || m_pCache->WaitForData(0, 0ms) > 0))
       {
         CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source read returned {}! Will retry",
                   __FUNCTION__, m_sourcePath, iRead);
@@ -566,14 +568,25 @@ retry:
       return -1;
     }
 
-    // just wait for some data to show up
-    iRc = m_pCache->WaitForData(1, 10s);
+    // The player decides whether to buffer between reads, so a read that parks
+    // for ten seconds on a stalled source takes those decisions with it.
+    iRc = m_pCache->WaitForData(1, 1s);
     if (iRc > 0)
       goto retry;
+
     if (!m_sourcePositionValid)
     {
       SetLastError(m_seekError != 0 ? m_seekError : EIO);
       return -1;
+    }
+
+    // Nothing arrived and the source has not reported the end of the file, so it
+    // has stalled. Say that, instead of the zero bytes every caller reads as EOF.
+    if (!m_pCache->IsEndOfInput())
+    {
+      CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source stalled, no data to read", __FUNCTION__,
+                m_sourcePath);
+      return -EAGAIN;
     }
   }
 
