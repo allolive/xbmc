@@ -1094,7 +1094,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
     {
       // assume we are not eof
       if (m_pFormatContext->pb)
+      {
         m_pFormatContext->pb->eof_reached = 0;
+        // ffmpeg latches a stalled read next to the eof flag and hands it back on
+        // every later read. Only that one is cleared; a real error still stands.
+        if (m_pFormatContext->pb->error == AVERROR(EAGAIN))
+          m_pFormatContext->pb->error = 0;
+      }
 
       // check for saved packet after a program change
       if (m_pkt.result < 0)
