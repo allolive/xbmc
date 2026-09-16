@@ -50,6 +50,16 @@ using namespace XFILE;
 namespace
 {
 constexpr size_t PREFETCH_WINDOW = 500;
+constexpr size_t LOOKUP_PREFETCH_WINDOW = 100;
+
+// The file id GetVideoSettings(item) uses without a query, or -1
+int KnownFileId(const CFileItem& item)
+{
+  if (URIUtils::IsBlurayPath(item.GetDynPath()) || !item.HasVideoInfoTag())
+    return -1;
+  const int fileId = item.GetVideoInfoTag()->m_iFileId;
+  return fileId > 0 ? fileId : -1;
+}
 } // namespace
 
 CVideoThumbLoader::CVideoThumbLoader() : CThumbLoader()
@@ -69,7 +79,9 @@ void CVideoThumbLoader::OnLoaderStart()
   m_artCache.clear();
   m_parentArtKeys.clear();
   m_streamDetailsCache.clear();
+  m_videoSettingsCache.clear();
   m_cachedWindowStart = 0;
+  m_lookupWindowStart = 0;
   CThumbLoader::OnLoaderStart();
 }
 
@@ -79,6 +91,7 @@ void CVideoThumbLoader::OnLoaderFinish()
   m_artCache.clear();
   m_parentArtKeys.clear();
   m_streamDetailsCache.clear();
+  m_videoSettingsCache.clear();
   CThumbLoader::OnLoaderFinish();
 }
 
@@ -265,6 +278,8 @@ bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
 
 bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
 {
+  PrefetchLookupWindow(pItem);
+
   if (pItem->IsShareOrDrive() || pItem->IsParentFolder() || pItem->GetPath() == "add")
     return false;
 
@@ -686,7 +701,7 @@ void CVideoThumbLoader::DetectAndAddMissingItemData(CFileItem &item)
     // check for custom stereomode setting in video settings
     CVideoSettings itemVideoSettings;
     m_videoDatabase->Open();
-    if (m_videoDatabase->GetVideoSettings(item, itemVideoSettings) &&
+    if (GetItemVideoSettings(item, itemVideoSettings) &&
         itemVideoSettings.m_StereoMode != static_cast<int>(RenderStereoMode::OFF))
     {
       stereoMode = CStereoscopicsManager::ConvertGuiStereoModeToString(
@@ -794,6 +809,60 @@ void CVideoThumbLoader::PrefetchStreamDetails(std::span<const CFileItemPtr> item
 
   m_videoDatabase->GetStreamDetailsForFiles(std::vector<int>(ids.begin(), ids.end()),
                                             m_streamDetailsCache, [this] { return m_bStop; });
+}
+
+void CVideoThumbLoader::PrefetchLookupWindow(const CFileItem* item)
+{
+  if (m_lookupWindowStart >= m_vecItems.size() || m_vecItems[m_lookupWindowStart].get() != item)
+    return;
+
+  const auto window = std::span(m_vecItems).subspan(
+      m_lookupWindowStart,
+      std::min(LOOKUP_PREFETCH_WINDOW, m_vecItems.size() - m_lookupWindowStart));
+  m_lookupWindowStart += window.size();
+  m_videoSettingsCache.clear();
+
+  try
+  {
+    PrefetchVideoSettings(window);
+  }
+  catch (...)
+  {
+    CLog::LogF(LOGERROR, "failed");
+    m_videoSettingsCache.clear();
+  }
+}
+
+void CVideoThumbLoader::PrefetchVideoSettings(std::span<const CFileItemPtr> items)
+{
+  // The files DetectAndAddMissingItemData() will read video settings for
+  std::set<int> ids;
+  for (const auto& item : items)
+  {
+    if (item->IsShareOrDrive() || item->IsParentFolder() ||
+        (item->IsFolder() && !item->GetProperty("IsHybridFolder").asBoolean(false)))
+      continue;
+
+    const int fileId = KnownFileId(*item);
+    if (fileId > 0 && item->GetVideoInfoTag()->m_streamDetails.GetStereoMode().empty())
+      ids.insert(fileId);
+  }
+
+  m_videoDatabase->GetVideoSettingsForFiles(std::vector<int>(ids.begin(), ids.end()),
+                                            m_videoSettingsCache, [this] { return m_bStop; });
+}
+
+bool CVideoThumbLoader::GetItemVideoSettings(const CFileItem& item, CVideoSettings& settings)
+{
+  const auto it = m_videoSettingsCache.find(KnownFileId(item));
+  if (it == m_videoSettingsCache.end())
+    return m_videoDatabase->GetVideoSettings(item, settings);
+
+  const bool found = it->second.has_value();
+  if (found)
+    settings = *it->second;
+  m_videoSettingsCache.erase(it);
+  return found;
 }
 
 bool CVideoThumbLoader::GetItemArt(int id, const MediaType& mediaType, KODI::ART::Artwork& artwork)
