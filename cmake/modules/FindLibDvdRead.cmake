@@ -54,6 +54,9 @@ if(NOT TARGET LIBRARY::${CMAKE_FIND_PACKAGE_NAME})
       string(APPEND ${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_C_FLAGS " -DPATH_MAX=2048 -D_BSD_SOURCE")
     endif()
 
+    string(APPEND ${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_C_FLAGS " -Wno-sign-compare -Wno-address-of-packed-member")
+    list(APPEND PATCH_COMMAND COMMAND sed -i "s|((packed,gcc_struct))|((packed))|" src/dvdread/ifo_types.h)
+
     if(${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.26)
       set(configure_env_mod ${CMAKE_COMMAND} -E env --modify NINJA=set:${NINJA_EXECUTABLE}
                                                     ${additional_env_mod})
