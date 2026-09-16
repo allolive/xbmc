@@ -210,13 +210,11 @@ void CWinSystemAmlogic::HotplugEvent()
   }
   catch (const std::exception& e)
   {
-    // It runs CleanAndClose() before it throws, so what is left has no connector
-    // and presentation stays off. Nothing above this catches, and this runs from
-    // the frame loop, so letting it out ends the process.
     CLog::Log(LOGERROR, "CWinSystemAmlogic::{} - display rebuild failed: {}", __FUNCTION__,
               e.what());
     return;
   }
+
   drmModeConnection connection;
   int mode_count = m_amlDisplay->aml_get_display_modes_count(&connection);
 

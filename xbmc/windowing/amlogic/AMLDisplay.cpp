@@ -614,6 +614,9 @@ int CAMLDRMUtils::get_drmProp(
   unsigned int i;
   drmModeObjectPropertiesPtr props = NULL;
 
+  if (!id)
+    return ret;
+
   props = drmModeObjectGetProperties(m_fd, id, obj_type);
   if (!props)
   {
@@ -688,6 +691,9 @@ void CAMLDRMUtils::set_drmProp(unsigned int id, std::string name,
   int res;
   drmModeObjectPropertiesPtr props = NULL;
 
+  if (!id)
+    return;
+
   props = drmModeObjectGetProperties(m_fd, id, obj_type);
   if (!props)
   {
@@ -734,7 +740,7 @@ int CAMLDRMUtils::aml_get_drmProperty(std::string name,
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
   int ret = -1;
-  unsigned int id;
+  unsigned int id = 0;
 
   if (!aml_get_drmDevice_connected())
   {
@@ -742,11 +748,8 @@ int CAMLDRMUtils::aml_get_drmProperty(std::string name,
 
     switch (obj_type) {
       case DRM_MODE_OBJECT_CONNECTOR:
-        // A rebuild that failed freed this and left the object alive. Leave the
-        // function, not the switch: the one below reads the same pointer.
-        if (!m_connector)
-          return ret;
-        id = m_connector->connector_id;
+        if (m_connector)
+          id = m_connector->connector_id;
         ret = get_drmProp(id, name, obj_type, data, data_len);
         [[fallthrough]];
       default:
@@ -756,13 +759,16 @@ int CAMLDRMUtils::aml_get_drmProperty(std::string name,
 
   switch (obj_type) {
     case DRM_MODE_OBJECT_CRTC:
-      id = m_crtc->crtc_id;
+      if (m_crtc)
+        id = m_crtc->crtc_id;
       break;
     case DRM_MODE_OBJECT_CONNECTOR:
-      id = m_connector->connector_id;
+      if (m_connector)
+        id = m_connector->connector_id;
       break;
     case DRM_MODE_OBJECT_ENCODER:
-      id = m_encoder->encoder_id;
+      if (m_encoder)
+        id = m_encoder->encoder_id;
       break;
     default:
       return ret;
@@ -777,7 +783,7 @@ int CAMLDRMUtils::aml_get_drmProperty(std::string name,
 void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type, unsigned int value)
 {
   std::unique_lock<CCriticalSection> lock(m_drmSection);
-  unsigned int id;
+  unsigned int id = 0;
 
   if (!aml_get_drmDevice_connected())
   {
@@ -785,11 +791,8 @@ void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type, 
 
     switch (obj_type) {
       case DRM_MODE_OBJECT_CONNECTOR:
-        // A rebuild that failed freed this and left the object alive. Leave the
-        // function, not the switch: the one below reads the same pointer.
-        if (!m_connector)
-          return;
-        id = m_connector->connector_id;
+        if (m_connector)
+          id = m_connector->connector_id;
         set_drmProp(id, name, obj_type, value, NULL);
         [[fallthrough]];
       default:
@@ -799,13 +802,16 @@ void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type, 
 
   switch (obj_type) {
     case DRM_MODE_OBJECT_CRTC:
-      id = m_crtc->crtc_id;
+      if (m_crtc)
+        id = m_crtc->crtc_id;
       break;
     case DRM_MODE_OBJECT_CONNECTOR:
-      id = m_connector->connector_id;
+      if (m_connector)
+        id = m_connector->connector_id;
       break;
     case DRM_MODE_OBJECT_ENCODER:
-      id = m_encoder->encoder_id;
+      if (m_encoder)
+        id = m_encoder->encoder_id;
       break;
     default:
       return;

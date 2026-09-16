@@ -1102,3 +1102,4 @@ void CDisplaySettings::SettingOptionsCmsGammaModesFiller(const SettingConstPtr& 
   list.emplace_back(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(36585),
                     CMS_TRC_ABSOLUTE);
 }
+

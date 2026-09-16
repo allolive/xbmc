@@ -279,15 +279,7 @@ bool CVideoPlayerVideo::AcceptsData() const
 
 bool CVideoPlayerVideo::HasData() const
 {
-  bool ret;
-
-  if (!(ret = (m_messageQueue.GetDataSize() > 0)))
-  {
-    if (m_pVideoCodec && m_processInfo.IsVideoHwDecoder())
-      ret = m_pVideoCodec->GetDataLevel() > 0;
-  }
-
-  return ret;
+  return m_messageQueue.GetDataSize() > 0;
 }
 
 bool CVideoPlayerVideo::IsInited() const
@@ -412,7 +404,7 @@ void CVideoPlayerVideo::Process()
         while (!m_bStop && m_pVideoCodec)
         {
           m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
-          if (!ProcessDecoderOutput(frametime, pts) || m_processInfo.IsVideoHwDecoder())
+          if (!ProcessDecoderOutput(frametime, pts))
             break;
         }
 
@@ -632,7 +624,7 @@ void CVideoPlayerVideo::Process()
         {
           CSysfsPath frame_format{"/sys/class/deinterlace/di0/frame_format"};
           if (frame_format.Exists())
-            m_vfmt = frame_format.Get<std::string>().value();
+            m_vfmt = frame_format.Get<std::string>().value_or("");
           // Only update interlace state from vfmt when it gives a definitive answer.
           // For MBAFF content, the DI module transiently reports "progressive"
           // (reflecting current macroblock type), then falls back to "null".

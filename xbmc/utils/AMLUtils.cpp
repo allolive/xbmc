@@ -113,7 +113,7 @@ static bool aml_support_vcodec_profile(const char *regex)
   CSysfsPath vcodec_profile{"/sys/class/amstream/vcodec_profile"};
   if (vcodec_profile.Exists())
   {
-    valstr = vcodec_profile.Get<std::string>().value();
+    valstr = vcodec_profile.Get<std::string>().value_or("");
     profile = (regexp.RegFind(valstr) >= 0) ? 1 : 0;
   }
 
@@ -236,11 +236,11 @@ bool aml_support_dolby_vision()
     support_dv = 0;
     if (support_info.Exists())
     {
-      support_dv = (int)((support_info.Get<int>().value() & 7) == 7);
+      support_dv = (int)((support_info.Get<int>().value_or(0) & 7) == 7);
       if (support_dv == 1) {
         CSysfsPath ko_info{"/sys/class/amdolby_vision/ko_info"};
         if (ko_info.Exists())
-          CLog::Log(LOGINFO, "Amlogic Dolby Vision info: {}", ko_info.Get<std::string>().value().c_str());
+          CLog::Log(LOGINFO, "Amlogic Dolby Vision info: {}", ko_info.Get<std::string>().value_or("").c_str());
       }
     }
   }
@@ -283,7 +283,7 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
 bool aml_video_started()
 {
   CSysfsPath videostarted{"/sys/class/tsync/videostarted"};
-  return (StringUtils::EqualsNoCase(videostarted.Get<std::string>().value(), "0x1"));
+  return (StringUtils::EqualsNoCase(videostarted.Get<std::string>().value_or("0x0"), "0x1"));
 }
 
 int aml_amdv_wait(StreamHdrType hdrType)
@@ -291,14 +291,11 @@ int aml_amdv_wait(StreamHdrType hdrType)
   if (hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
     CSysfsPath amdv_wait_delay{"/sys/module/aml_media/parameters/amdv_wait_delay"};
-    // The read cannot report a missing node, so ask first. CRenderManager reads
-    // this as a delay and counts a large one down a call at a time.
-    if (!amdv_wait_delay.Exists())
-      return 0;
-    return amdv_wait_delay.Get<int>().value_or(0);
+    if (amdv_wait_delay.Exists())
+      return amdv_wait_delay.Get<int>().value_or(0);
   }
-  else
-    return 0;
+
+  return 0;
 }
 
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode)

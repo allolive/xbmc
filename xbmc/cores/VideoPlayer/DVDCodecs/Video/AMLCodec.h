@@ -59,6 +59,8 @@ struct pq_ctrl_s {
 #define AMVECM_IOC_S_PQ_CTRL  _IOW(_VE_CM, 0x69, struct vpp_pq_ctrl_s)
 #define AMVECM_IOC_G_PQ_CTRL  _IOR(_VE_CM, 0x6a, struct vpp_pq_ctrl_s)
 
+#define AMLVIDEO_IOC_GET_VFQ     _IOR('V', 0x01, int)
+
 class CAMLCodec
 {
 public:
@@ -112,9 +114,6 @@ private:
   bool             m_trimWasPassthrough{false};
   double           m_lastAudioOffset{0.0};
   bool             m_offsetStoodDown{false};
-  //! Whether this took the system default vfm chain away, so the close puts back
-  //! only what it actually took.
-  bool             m_vfmMapOverridden{false};
   bool             m_drain = false;
   am_private_t    *am_private;
   CDVDStreamInfo   m_hints;
@@ -141,7 +140,6 @@ private:
   unsigned int m_state;
 
   PosixFilePtr     m_amlVideoFile;
-  //! Per instance, not file scope: the member it guards is per instance.
   std::mutex       m_amlVideoFileMutex;
   std::string      m_defaultVfmMap;
 

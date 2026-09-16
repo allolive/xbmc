@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "GameClientRestoreResult.h"
 #include "GameClientSubsystem.h"
 #include "addons/binary-addons/AddonDll.h"
 #include "addons/kodi-dev-kit/include/kodi/addon-instance/Game.h"
@@ -33,6 +34,7 @@ class IStreamManager;
 
 namespace GAME
 {
+class CGameClientDiscModel;
 
 class CGameClientCheevos;
 class CGameClientInGameSaves;
@@ -170,7 +172,8 @@ public:
   size_t GetSerializeSize() const { return m_serializeSize; }
   double GetFrameRate() const { return m_framerate.load(); }
   double GetSampleRate() const { return m_samplerate.load(); }
-  void RunFrame();
+  void PollInput();
+  void RunFrame(bool pollInput = true);
 
   /*!
    * \brief Tell the client what speed the player is running at
@@ -188,7 +191,9 @@ public:
   // Access memory
   size_t SerializeSize() const { return m_serializeSize; }
   bool Serialize(uint8_t* data, size_t size);
-  bool Deserialize(const uint8_t* data, size_t size);
+  RestoreResult Deserialize(const uint8_t* data,
+                            size_t size,
+                            const CGameClientDiscModel* discState = nullptr);
 
   /*!
    * \brief Hold the client still for the duration of a savestate snapshot
@@ -223,13 +228,6 @@ public:
    * data: the client has to know the machine state jumped either way.
    */
   bool DeserializeAchievements(const uint8_t* data, size_t size);
-
-  /*!
-   * \brief Give the client the RetroAchievements account to sign in with
-   *
-   * The account is held by Kodi, which owns the settings it is entered in.
-   */
-  bool SetRetroAchievementsCredentials(const std::string& username, const std::string& token);
 
   // Implementation of IHwFramebufferCallback
   void HardwareContextReset() override;
@@ -293,6 +291,31 @@ private:
                                             unsigned int count);
   static void cb_rc_on_server_error(KODI_HANDLE kodiInstance, const char* message, const char* api);
   static void cb_rc_on_connection_changed(KODI_HANDLE kodiInstance, bool connected);
+  static void cb_rc_on_challenge_indicator(KODI_HANDLE kodiInstance,
+                                           const game_rc_achievement_challenge* data,
+                                           bool show);
+  static void cb_rc_on_achievement_progress_show(
+      KODI_HANDLE kodiInstance, const struct game_rc_achievement_progress_indicator* data);
+  static void cb_rc_on_achievement_progress_update(
+      KODI_HANDLE kodiInstance, const struct game_rc_achievement_progress_indicator* data);
+  static void cb_rc_on_achievement_progress_hide(
+      KODI_HANDLE kodiInstance, const struct game_rc_achievement_progress_indicator* data);
+  static void cb_rc_on_leaderboard_started(KODI_HANDLE kodiInstance,
+                                           const struct game_rc_leaderboard* data);
+  static void cb_rc_on_leaderboard_failed(KODI_HANDLE kodiInstance,
+                                          const struct game_rc_leaderboard* data);
+  static void cb_rc_on_leaderboard_submitted(KODI_HANDLE kodiInstance,
+                                             const struct game_rc_leaderboard* data);
+  static void cb_rc_on_leaderboard_tracker_show(KODI_HANDLE kodiInstance,
+                                                const struct game_rc_leaderboard_tracker* data);
+  static void cb_rc_on_leaderboard_tracker_update(KODI_HANDLE kodiInstance,
+                                                  const struct game_rc_leaderboard_tracker* data);
+  static void cb_rc_on_leaderboard_tracker_hide(KODI_HANDLE kodiInstance,
+                                                const struct game_rc_leaderboard_tracker* data);
+  static void cb_rc_on_leaderboard_scoreboard(KODI_HANDLE kodiInstance,
+                                              const struct game_rc_leaderboard_scoreboard* data);
+  static void cb_rc_on_reset(KODI_HANDLE kodiInstance);
+  static void cb_rc_on_subset_completed(KODI_HANDLE kodiInstance, const char* title);
   //@}
 
   /*!

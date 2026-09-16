@@ -2365,9 +2365,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
 
   if (am_private->vcodec.dec_mode == STREAM_TYPE_SINGLE)
   {
-    // Recorded before the write: a write that throws half way still has to be
-    // put back.
-    m_vfmMapOverridden = true;
+    m_defaultVfmMap = GetVfmMap("default");
     SetVfmMap("default", "decoder amlvideo deinterlace amvideo");
   }
 
@@ -2424,7 +2422,6 @@ bool CAMLCodec::OpenAmlVideo(const CDVDStreamInfo &hints)
     std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
     m_amlVideoFile = amlVideoFile;
   }
-  m_defaultVfmMap = GetVfmMap("default");
 
   return true;
 }
@@ -2471,13 +2468,11 @@ std::string CAMLCodec::GetVfmMap(const std::string &name)
   std::string vfmMap;
   CSysfsPath map{"/sys/class/vfm/map"};
   if (map.Exists())
-    vfmMap = map.Get<std::string>().value();
+    vfmMap = map.Get<std::string>().value_or("");
   std::vector<std::string> sections = StringUtils::Split(vfmMap, '\n');
   std::string sectionMap;
   for (size_t i = 0; i < sections.size(); ++i)
   {
-    // The line is "[NN]  <id> { node(a) node }", so match the id against the
-    // token in front of the brace rather than the start of the line.
     size_t brace = sections[i].find('{');
     if (brace == std::string::npos)
       continue;
@@ -2496,8 +2491,6 @@ std::string CAMLCodec::GetVfmMap(const std::string &name)
 
   size_t openingBracePos = sectionMap.find('{') + 1;
   sectionMap = sectionMap.substr(openingBracePos, sectionMap.size() - openingBracePos - 1);
-  // Interior nodes carry their activity as "(0)" or "(1)"; the last is printed
-  // bare. The names are what is written back.
   for (char digit = '0'; digit <= '9'; ++digit)
     StringUtils::Replace(sectionMap, std::string("(") + digit + ")", "");
   StringUtils::Trim(sectionMap);
@@ -2596,16 +2589,11 @@ void CAMLCodec::CloseAmlVideo()
     std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
     closing.swap(m_amlVideoFile);
   }
-  // Dropped here rather than at the end of the scope, so the node is released at
-  // the same point as before. A frame still in flight holds its own reference.
   closing.reset();
 
-  // Put back only what this took away, and only if it took it. Nothing to give
-  // back if the read found no such map, and an empty one is a map that exists with
-  // no nodes - not worth restoring over a working chain.
-  if (m_vfmMapOverridden)
+  if (am_private->vcodec.dec_mode == STREAM_TYPE_SINGLE)
   {
-    m_vfmMapOverridden = false;
+    // An empty map exists with no nodes - not worth restoring over a working chain.
     if (!m_defaultVfmMap.empty())
     {
       try
@@ -2619,6 +2607,7 @@ void CAMLCodec::CloseAmlVideo()
                   __FUNCTION__, e.what());
       }
     }
+    std::string().swap(m_defaultVfmMap);
   }
 }
 
@@ -2644,7 +2633,7 @@ void CAMLCodec::Reset()
   CSysfsPath video_blackout_policy{"/sys/class/video/blackout_policy"};
   if (video_blackout_policy.Exists())
   {
-    blackout_policy = video_blackout_policy.Get<int>().value();
+    blackout_policy = video_blackout_policy.Get<int>().value_or(blackout_policy);
     video_blackout_policy.Set(0);
   }
 
@@ -3032,6 +3021,7 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
     std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
     amlVideoFile = m_amlVideoFile;
   }
+
   if (!amlVideoFile)
     return 0;
 
@@ -3071,7 +3061,16 @@ int CAMLCodec::DequeueBuffer()
   v4l2_buffer vbuf = v4l2_buffer();
   vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-  int ret = (m_amlVideoFile->IOControl(VIDIOC_DQBUF, &vbuf) < 0) ? errno : 0;
+  PosixFilePtr amlVideoFile;
+  {
+    std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
+    amlVideoFile = m_amlVideoFile;
+  }
+
+  if (!amlVideoFile)
+    return -EBADF;
+
+  int ret = (amlVideoFile->IOControl(VIDIOC_DQBUF, &vbuf) < 0) ? errno : 0;
 
   if (ret == 0)
   {
@@ -3096,6 +3095,7 @@ int CAMLCodec::DequeueBuffer()
 CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
 {
   int ret = EAGAIN;
+  int queued_frames = 0;
   int data_len, free_len, size;
   float buffer_level = GetBufferLevel(0, data_len, free_len, size);
   std::chrono::milliseconds elapsed_since_last_frame(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now()
@@ -3105,7 +3105,10 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   if (!m_opened)
     return CDVDVideoCodec::VC_ERROR;
 
-  if (m_buffer_level_ready && (buffer_level > m_minimum_buffer_level || (m_drain && data_len > 0)) && (ret = DequeueBuffer()) == 0)
+  if (m_drain)
+    queued_frames = m_amlVideoFile->IOControl(AMLVIDEO_IOC_GET_VFQ, &queued_frames) == 0 ? queued_frames : 0;
+
+  if (m_buffer_level_ready && (buffer_level > m_minimum_buffer_level || (queued_frames > 0)) && (ret = DequeueBuffer()) == 0)
   {
     pVideoPicture->iFlags = 0;
 
@@ -3139,11 +3142,12 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
   }
   // the caller's drain loop neither waits nor reads its message queue
   else if (m_drain && m_buffer_level_ready &&
-           (data_len == 0 || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout)))
+           (queued_frames == 0 ||
+            elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout)))
   {
-    if (data_len)
-      CLog::Log(LOGWARNING, "CAMLCodec::GetPicture: drain stalled, {:d} bytes left after {:d}ms",
-        data_len, elapsed_since_last_frame.count());
+    if (queued_frames)
+      CLog::Log(LOGWARNING, "CAMLCodec::GetPicture: drain stalled, {:d} frames left after {:d}ms",
+        queued_frames, elapsed_since_last_frame.count());
 
     return CDVDVideoCodec::VC_EOF;
   }

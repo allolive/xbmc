@@ -93,7 +93,7 @@ private:
 
     CSysfsPath config{"/sys/class/amhdmitx/amhdmitx0/config"};
     if (config.Exists())
-      aml_config = config.Get<std::string>().value();
+      aml_config = config.Get<std::string>().value_or("");
 
     aml_config_lines = StringUtils::Split(aml_config, "\n");
     for (i = aml_config_lines.begin(); i < aml_config_lines.end(); i++)

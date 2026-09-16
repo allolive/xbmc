@@ -140,6 +140,7 @@ private:
   int m_height;
   int m_ScreenWidth;
   int m_ScreenHeight;
+  CCriticalSection m_drmSection;
 
   drmModeResPtr m_resources{nullptr};
   drmModeConnectorPtr m_connector{nullptr};
@@ -149,7 +150,6 @@ private:
   std::atomic<uint32_t> m_crtcId{0};
   drmModeCrtcPtr m_orig_crtc{nullptr};
   drmModePlanePtr m_plane{nullptr};
-  CCriticalSection m_drmSection;
 
   int m_inFenceFd{-1};
   int m_outFenceFd{-1};
