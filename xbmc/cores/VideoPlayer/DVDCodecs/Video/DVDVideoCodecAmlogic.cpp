@@ -407,6 +407,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   m_videobuffer.color_transfer = m_hints.colorTransferCharacteristic;
 
   m_processInfo.SetVideoDecoderName(m_pFormatName, true);
+  // libamcodec keeps its own stream buffer.
+  m_processInfo.SetVideoCodecBuffersData(true);
   m_processInfo.SetVideoDimensions(m_hints.width, m_hints.height);
   m_processInfo.SetVideoDeintMethod("hardware");
   m_processInfo.SetVideoDAR(m_hints.aspect);
