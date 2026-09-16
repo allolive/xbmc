@@ -11,10 +11,12 @@
 #include "FileItem.h"
 #include "ThumbLoader.h"
 #include "utils/Artwork.h"
+#include "utils/StreamDetails.h"
 
 #include <map>
 #include <set>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 class CStreamDetails;
@@ -78,6 +80,7 @@ public:
 protected:
   CVideoDatabase *m_videoDatabase;
   ArtCache m_artCache;
+  std::unordered_map<int, CStreamDetails> m_streamDetailsCache; // by file id
 
   /*! \brief Tries to detect missing data/info from a file and adds those
    \param item The CFileItem to process
@@ -90,6 +93,7 @@ protected:
 private:
   void PrefetchCachedWindow(const CFileItem* item);
   void PrefetchArt(std::span<const CFileItemPtr> items);
+  void PrefetchStreamDetails(std::span<const CFileItemPtr> items);
   bool GetItemArt(int id, const MediaType& mediaType, KODI::ART::Artwork& artwork);
 
   std::set<std::pair<MediaType, int>> m_parentArtKeys;
