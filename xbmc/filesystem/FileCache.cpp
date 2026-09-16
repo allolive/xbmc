@@ -487,6 +487,11 @@ retry:
   iRc = m_pCache->ReadFromCache((char *)lpBuf, uiBufSize);
   if (iRc > 0)
   {
+    if (m_readStalled)
+    {
+      CLog::Log(LOGINFO, "CFileCache::{} - <{}> source resumed", __FUNCTION__, m_sourcePath);
+      m_readStalled = false;
+    }
     m_readPos += iRc;
     return (int)iRc;
   }
@@ -504,8 +509,10 @@ retry:
     // has stalled. Say that, instead of the zero bytes every caller reads as EOF.
     if (!m_pCache->IsEndOfInput())
     {
-      CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source stalled, no data to read", __FUNCTION__,
-                m_sourcePath);
+      if (!m_readStalled)
+        CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source stalled, no data to read",
+                  __FUNCTION__, m_sourcePath);
+      m_readStalled = true;
       return -EAGAIN;
     }
   }
@@ -536,6 +543,8 @@ int64_t CFileCache::Seek(int64_t iFilePosition, int iWhence)
               m_sourcePath);
     return -1;
   }
+
+  m_readStalled = false;
 
   int64_t iCurPos = m_readPos;
   int64_t iTarget = iFilePosition;
