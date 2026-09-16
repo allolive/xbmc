@@ -131,8 +131,16 @@ bool CGUIWindowVideoBase::OnMessage(CGUIMessage& message)
   switch ( message.GetMessage() )
   {
   case GUI_MSG_WINDOW_DEINIT:
+    // Don't wait for the item being loaded: on a slow share that read can take tens
+    // of seconds. The window stays alive, and the loader is joined before reuse. At
+    // shutdown it has to finish now, before the services it uses are torn down.
     if (m_thumbLoader.IsLoading())
-      m_thumbLoader.StopThread();
+    {
+      if (g_application.IsStopping())
+        m_thumbLoader.StopThread();
+      else
+        m_thumbLoader.StopAsync();
+    }
     m_database.Close();
     break;
 
