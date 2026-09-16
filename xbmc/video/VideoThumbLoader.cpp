@@ -68,6 +68,7 @@ void CVideoThumbLoader::OnLoaderStart()
   m_videoDatabase->Open();
   m_artCache.clear();
   m_parentArtKeys.clear();
+  m_streamDetailsCache.clear();
   m_cachedWindowStart = 0;
   CThumbLoader::OnLoaderStart();
 }
@@ -77,6 +78,7 @@ void CVideoThumbLoader::OnLoaderFinish()
   m_videoDatabase->Close();
   m_artCache.clear();
   m_parentArtKeys.clear();
+  m_streamDetailsCache.clear();
   CThumbLoader::OnLoaderFinish();
 }
 
@@ -196,11 +198,26 @@ bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
 
   if (!pItem->HasVideoInfoTag() || !pItem->GetVideoInfoTag()->HasStreamDetails()) // no stream details
   {
-    if ((pItem->HasVideoInfoTag() &&
-         pItem->GetVideoInfoTag()->m_iFileId >= 0) // file (or maybe folder) is in the database
-        || (!pItem->IsFolder() &&
-            VIDEO::IsVideo(
-                *pItem))) // Some other video file for which we haven't yet got any database details
+    const auto prefetched = pItem->HasVideoInfoTag()
+                                ? m_streamDetailsCache.find(pItem->GetVideoInfoTag()->m_iFileId)
+                                : m_streamDetailsCache.end();
+    if (prefetched != m_streamDetailsCache.end())
+    {
+      if (prefetched->second.HasItems())
+      {
+        CVideoInfoTag& tag = *pItem->GetVideoInfoTag();
+        tag.m_streamDetails = prefetched->second;
+        if (tag.m_streamDetails.GetVideoDuration() > 0)
+          tag.SetDuration(tag.m_streamDetails.GetVideoDuration());
+        pItem->SetInvalid();
+      }
+      m_streamDetailsCache.erase(prefetched);
+    }
+    else if ((pItem->HasVideoInfoTag() &&
+              pItem->GetVideoInfoTag()->m_iFileId >= 0) // file (or maybe folder) is in the database
+             || (!pItem->IsFolder() &&
+                 VIDEO::IsVideo(
+                     *pItem))) // Some other video file for which we haven't yet got any database details
     {
       if (m_videoDatabase->GetStreamDetails(*pItem))
         pItem->SetInvalid();
@@ -695,15 +712,18 @@ void CVideoThumbLoader::PrefetchCachedWindow(const CFileItem* item)
   const auto window = std::span(m_vecItems).subspan(
       m_cachedWindowStart, std::min(PREFETCH_WINDOW, m_vecItems.size() - m_cachedWindowStart));
   m_cachedWindowStart += window.size();
+  m_streamDetailsCache.clear();
 
   try
   {
     PrefetchArt(window);
+    PrefetchStreamDetails(window);
   }
   catch (...)
   {
     CLog::LogF(LOGERROR, "failed");
     m_artCache.clear();
+    m_streamDetailsCache.clear();
   }
 }
 
@@ -756,6 +776,24 @@ void CVideoThumbLoader::PrefetchArt(std::span<const CFileItemPtr> items)
     if (!complete)
       break;
   }
+}
+
+void CVideoThumbLoader::PrefetchStreamDetails(std::span<const CFileItemPtr> items)
+{
+  // The files LoadItemCached() will read stream details for
+  std::set<int> ids;
+  for (const auto& item : items)
+  {
+    if (item->IsShareOrDrive() || item->IsParentFolder() || !item->HasVideoInfoTag())
+      continue;
+
+    const CVideoInfoTag& tag = *item->GetVideoInfoTag();
+    if (!tag.HasStreamDetails() && tag.m_iFileId >= 0)
+      ids.insert(tag.m_iFileId);
+  }
+
+  m_videoDatabase->GetStreamDetailsForFiles(std::vector<int>(ids.begin(), ids.end()),
+                                            m_streamDetailsCache, [this] { return m_bStop; });
 }
 
 bool CVideoThumbLoader::GetItemArt(int id, const MediaType& mediaType, KODI::ART::Artwork& artwork)
