@@ -2233,6 +2233,7 @@ CacheInfo CVideoPlayer::GetCachingTimes()
   info.forwardTime =
       (play_sbp > 0.0) ? (static_cast<double>(cached) * play_sbp / DVD_TIME_BASE) : -1.0;
   info.endCached = (cached >= static_cast<uint64_t>(remain));
+  info.endOfInput = status.endOfInput;
   info.valid = true;
 
   if (currate == 0)
@@ -2291,7 +2292,7 @@ bool CVideoPlayer::TryEnterSourceUnderrunHold()
   const bool settling = !m_syncTimer.IsTimePast() || !m_srcUnderrunCooldown.IsTimePast();
 
   const CacheInfo cache = GetCachingTimes();
-  if (!cache.valid || cache.endCached || cache.forwardTime < 0.0 ||
+  if (!cache.valid || cache.endCached || cache.endOfInput || cache.forwardTime < 0.0 ||
       cache.forwardTime > SRC_UNDERRUN_TIME || cache.level < 0.0 ||
       cache.level >= SRC_RESUME_LEVEL || (settling && cache.forwardTime > SRC_EMPTY_TIME))
     return false;
@@ -2331,8 +2332,11 @@ void CVideoPlayer::HandlePlaySpeed()
     // on a cache that may still be short in seconds, so they keep the cooldown, or
     // the hold would be taken again within a second, over and over.
     const bool recovered = cache.valid && cache.forwardTime >= SRC_RESUME_TIME;
-    const bool stopWaiting =
-        !cache.valid || cache.endCached || cache.level < 0.0 || cache.level >= SRC_RESUME_LEVEL;
+    // endOfInput as well as endCached: a source that stops early never reaches the
+    // length it advertised, and nothing reads during a hold, so without this the
+    // wait is for bytes that are never coming.
+    const bool stopWaiting = !cache.valid || cache.endCached || cache.endOfInput ||
+                             cache.level < 0.0 || cache.level >= SRC_RESUME_LEVEL;
 
     if (recovered || stopWaiting)
     {

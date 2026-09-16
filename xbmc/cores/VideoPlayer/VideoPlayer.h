@@ -265,6 +265,7 @@ struct CacheInfo
   double time; // estimated playback time of current cached bytes
   double forwardTime; // seconds of content cached ahead, at the file's average bitrate
   bool endCached; // the rest of the file is already cached
+  bool endOfInput; // the source has no more data to give
   bool valid;
 };
 

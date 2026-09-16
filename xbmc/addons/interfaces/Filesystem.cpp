@@ -833,10 +833,7 @@ ssize_t Interface_Filesystem::read_file(void* kodiBase, void* file, void* ptr, s
     return -1;
   }
 
-  // The ABI documents -1 for any error, so do not let an internal error value
-  // through - the file cache reports a stalled source as one.
-  const ssize_t ret = static_cast<CFile*>(file)->Read(ptr, size);
-  return ret < 0 ? -1 : ret;
+  return static_cast<CFile*>(file)->Read(ptr, size);
 }
 
 bool Interface_Filesystem::read_file_string(void* kodiBase,

@@ -939,7 +939,10 @@ void CActiveAE::StateMachine(int signal, Protocol *port, Message *msg)
             // enters the state machine, so marking it would strand it here.
             for (auto& stream : m_streams)
               if (stream->m_pClock)
+              {
                 stream->m_syncState = CAESyncInfo::AESyncState::SYNC_START;
+                m_stats.UpdateStream(stream);
+              }
           }
           if (!displayReset)
             msg->Reply(CActiveAEControlProtocol::ACC);
@@ -1273,6 +1276,7 @@ void CActiveAE::Configure(AEAudioFormat *desiredFmt)
                                 : stream->GetErrorInterval();
       stream->m_syncError.Flush(interval);
       stream->m_syncErrorRaw.Flush(interval);
+      m_stats.UpdateStream(stream);
     }
 
     if (!InitSink())

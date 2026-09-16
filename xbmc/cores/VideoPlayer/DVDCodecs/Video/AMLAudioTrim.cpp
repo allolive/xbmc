@@ -443,7 +443,10 @@ void CAMLAudioTrim::Settle(double reading)
   // Against err and not drift. Walking an offset out means deliberately holding
   // a large rate error, and a level sitting at its limit doing exactly what it
   // was told is not a knob that has stopped listening.
-  if (std::abs(m_want) >= MAX_LEVEL_RATE && std::abs(err) > ANSWERED && !answered)
+  // A level the ceiling never let reach the clock says nothing about whether the
+  // clock listens, so this only counts while a write is permitted.
+  if (m_levelMax > 0.0 && std::abs(m_want) >= MAX_LEVEL_RATE && std::abs(err) > ANSWERED &&
+      !answered)
     ++m_clamped;
   else
     m_clamped = 0;

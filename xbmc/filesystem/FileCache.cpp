@@ -411,9 +411,10 @@ void CFileCache::Process()
       iRead = m_source->Read(buffer.get(), maxSourceRead);
     if (iRead <= 0)
     {
-      // A failed read before the end of the file is a stall, so retry it even once the
-      // player has caught up.
-      if (m_writePos < m_fileSize && (iRead < 0 || m_pCache->WaitForData(0, 0ms) > 0))
+      // A source that can answer a later read says so with -EAGAIN, whatever length
+      // it advertised, so a stalled live or chunked stream is retried too. Anything
+      // else is the source's own answer and keeps the stock test.
+      if (iRead == -EAGAIN || (m_writePos < m_fileSize && m_pCache->WaitForData(0, 0ms) > 0))
       {
         CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source read returned {}! Will retry",
                   __FUNCTION__, m_sourcePath, iRead);
@@ -593,7 +594,8 @@ retry:
         CLog::Log(LOGWARNING, "CFileCache::{} - <{}> source stalled, no data to read",
                   __FUNCTION__, m_sourcePath);
       m_readStalled = true;
-      return -EAGAIN;
+      SetLastError(EAGAIN);
+      return -1;
     }
   }
 
@@ -749,6 +751,7 @@ int CFileCache::IoControl(IOControl request, void* param)
     status->maxrate = m_writeRate;
     status->currate = m_writeRateActual;
     status->lowrate = m_writeRateLowSpeed;
+    status->endOfInput = m_pCache->IsEndOfInput();
     m_writeRateLowSpeed = 0; // Reset low speed condition
     return 0;
   }

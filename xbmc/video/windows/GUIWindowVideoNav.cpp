@@ -14,7 +14,6 @@
 #include "PartyModeManager.h"
 #include "ServiceBroker.h"
 #include "Util.h"
-#include "application/Application.h"
 #include "dialogs/GUIDialogMediaSource.h"
 #include "dialogs/GUIDialogYesNo.h"
 #include "filesystem/Directory.h"
@@ -111,18 +110,6 @@ bool CGUIWindowVideoNav::OnMessage(CGUIMessage& message)
   {
   case GUI_MSG_WINDOW_RESET:
     m_vecItems->SetPath("");
-    break;
-  case GUI_MSG_WINDOW_DEINIT:
-    // Don't wait for the item being loaded: on a slow share that read can take tens
-    // of seconds. The window stays alive, and the loader is joined before reuse. At
-    // shutdown it has to finish now, before the services it uses are torn down.
-    if (m_thumbLoader.IsLoading())
-    {
-      if (g_application.IsStopping())
-        m_thumbLoader.StopThread();
-      else
-        m_thumbLoader.StopAsync();
-    }
     break;
   case GUI_MSG_WINDOW_INIT:
     {

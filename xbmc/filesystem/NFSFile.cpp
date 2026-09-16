@@ -21,6 +21,7 @@
 #include "utils/URIUtils.h"
 #include "utils/log.h"
 
+#include <cerrno>
 #include <inttypes.h>
 #include <mutex>
 
@@ -57,6 +58,34 @@ constexpr auto KEEP_ALIVE_TIMEOUT = 45s; // half of lease_time
 constexpr auto IDLE_TIMEOUT = 30s; // close fast unused contexts when no active connections
 
 constexpr int NFS4ERR_EXPIRED = -11; // client session expired due idle time greater than lease_time
+
+// libnfs hands back the RPC layer's verdict: a transport failure as -EFAULT, a
+// cancelled call as -EINTR, NFS3ERR_JUKEBOX as -EAGAIN, and a server that stopped
+// answering as one of the socket errors. A later read can succeed after any of
+// them; the file's own answers stand.
+bool IsTransientReadError(ssize_t err)
+{
+  switch (-err)
+  {
+    case EAGAIN:
+    case EINTR:
+    case EFAULT:
+    case EIO:
+    case EPIPE:
+    case ETIMEDOUT:
+    case ECONNRESET:
+    case ECONNABORTED:
+    case ECONNREFUSED:
+    case ENETDOWN:
+    case ENETRESET:
+    case ENETUNREACH:
+    case EHOSTDOWN:
+    case EHOSTUNREACH:
+      return true;
+    default:
+      return false;
+  }
+}
 
 constexpr auto SETTING_NFS_VERSION = "nfs.version";
 constexpr auto SETTING_NFS_CHUNKSIZE = "nfs.chunksize";
@@ -774,8 +803,13 @@ ssize_t CNFSFile::Read(void *lpBuf, size_t uiBufSize)
 
   //something went wrong ...
   if (numberOfBytesRead < 0)
+  {
     CLog::Log(LOGERROR, "{} - Error( {}, {} )", __FUNCTION__, (int64_t)numberOfBytesRead,
               nfs_get_error(m_pNfsContext));
+
+    if (IsTransientReadError(numberOfBytesRead))
+      return -EAGAIN;
+  }
 
   return numberOfBytesRead;
 }
