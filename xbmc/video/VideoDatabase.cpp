@@ -74,6 +74,7 @@
 #include <memory>
 #include <ranges>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -4687,6 +4688,36 @@ bool CVideoDatabase::AddStreamDetailRow(Dataset& ds, CStreamDetails& details)
   return false;
 }
 
+namespace
+{
+constexpr size_t MAX_IDS_PER_QUERY = 500;
+
+// Calls fn(ids, idList) for consecutive slices of at most MAX_IDS_PER_QUERY ids, where idList is
+// the slice joined with commas. Stops early, returning false, when abort or fn returns false.
+template<typename Fn>
+bool ForEachIdChunk(const std::vector<int>& ids, const std::function<bool()>& abort, Fn&& fn)
+{
+  for (size_t begin = 0; begin < ids.size(); begin += MAX_IDS_PER_QUERY)
+  {
+    if (abort && abort())
+      return false;
+
+    const auto chunk =
+        std::span(ids).subspan(begin, std::min(MAX_IDS_PER_QUERY, ids.size() - begin));
+    std::string idList;
+    for (const int id : chunk)
+    {
+      if (!idList.empty())
+        idList += ',';
+      idList += std::to_string(id);
+    }
+    if (!fn(chunk, idList))
+      return false;
+  }
+  return true;
+}
+} // namespace
+
 bool CVideoDatabase::GetStreamDetails(const std::string& filenameAndPath, CStreamDetails& details)
 {
   CVideoInfoTag tag;
@@ -5515,6 +5546,54 @@ bool CVideoDatabase::GetArtForItem(int mediaId, const MediaType& mediaType, KODI
     CLog::LogF(LOGERROR, "({}) failed", mediaId);
   }
   return false;
+}
+
+bool CVideoDatabase::GetArtForItems(const std::vector<int>& mediaIds,
+                                    const MediaType& mediaType,
+                                    std::unordered_map<int, KODI::ART::Artwork>& art,
+                                    const std::function<bool()>& abort /* = {} */)
+{
+  if (mediaIds.empty())
+    return true;
+  if (nullptr == m_pDB)
+    return false;
+
+  std::unique_ptr<Dataset> pDS(m_pDB->CreateDataset());
+  if (!pDS)
+    return false;
+
+  return ForEachIdChunk(
+      mediaIds, abort,
+      [&](std::span<const int> ids, const std::string& idList)
+      {
+        std::unordered_map<int, KODI::ART::Artwork> found;
+        try
+        {
+          const std::string sql = PrepareSQL(
+              "SELECT media_id,type,url FROM art WHERE media_id IN (%s) AND media_type='%s'",
+              idList.c_str(), mediaType.c_str());
+          pDS->query(sql);
+          while (!pDS->eof())
+          {
+            found[pDS->fv(0).get_asInt()].try_emplace(pDS->fv(1).get_asString(),
+                                                      pDS->fv(2).get_asString());
+            pDS->next();
+          }
+          pDS->close();
+        }
+        catch (...)
+        {
+          CLog::LogF(LOGERROR, "({} ids, {}) failed", ids.size(), mediaType);
+          return false;
+        }
+
+        for (const int id : ids)
+        {
+          auto node = found.extract(id);
+          art.try_emplace(id, node ? std::move(node.mapped()) : KODI::ART::Artwork{});
+        }
+        return true;
+      });
 }
 
 bool CVideoDatabase::GetArtForAsset(int assetId,

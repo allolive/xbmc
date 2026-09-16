@@ -864,6 +864,20 @@ public:
   bool GetArtForItem(int mediaId, const MediaType& mediaType, KODI::ART::Artwork& art);
   std::string GetArtForItem(int mediaId, const MediaType &mediaType, const std::string &artType);
 
+  /*!
+   * \brief Retrieve the art of many items of one media type with a few queries
+   * \param mediaIds ids of the items, looked up in chunks
+   * \param mediaType media type of the items
+   * \param art receives one entry per id that was looked up, empty if the item has no art. Ids of a
+   * chunk that failed or was not reached are left out, and entries already in the map are kept.
+   * \param abort optional, checked before each chunk; the lookup stops when it returns true
+   * \return true if every chunk was looked up, false if the lookup was stopped or failed
+   */
+  bool GetArtForItems(const std::vector<int>& mediaIds,
+                      const MediaType& mediaType,
+                      std::unordered_map<int, KODI::ART::Artwork>& art,
+                      const std::function<bool()>& abort = {});
+
   void UpdateArtForItem(int mediaId, const MediaType& mediaType) const;
 
   /*!
