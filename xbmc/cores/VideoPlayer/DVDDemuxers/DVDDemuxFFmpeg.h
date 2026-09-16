@@ -117,6 +117,7 @@ public:
 
   AVFormatContext* m_pFormatContext;
   std::shared_ptr<CDVDInputStream> m_pInput;
+  std::shared_ptr<CDVDInputStreamFile> m_fileInput; // m_pInput, when it is a file input
 
 protected:
   friend class CDemuxStreamAudioFFmpeg;
@@ -165,6 +166,7 @@ protected:
   int m_seekStream;
 
   XbmcThreads::EndTime<> m_timeout;
+  uint32_t m_timeoutStallCount = 0;
 
   // Due to limitations of ffmpeg, we only can detect a program change
   // with a packet. This struct saves the packet for the next read and

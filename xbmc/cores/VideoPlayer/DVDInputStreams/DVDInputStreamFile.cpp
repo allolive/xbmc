@@ -97,6 +97,15 @@ int CDVDInputStreamFile::Read(uint8_t* buf, int buf_size)
 
   ssize_t ret = m_pFile->Read(buf, buf_size);
 
+  // Playback waits for a stalled source until stopped: a demuxer that meets the stall
+  // mid-element takes it for the end of the file.
+  if (ret == -EAGAIN && m_waitsForUser)
+  {
+    while (ret == -EAGAIN && !m_aborted)
+      ret = m_pFile->Read(buf, buf_size);
+    m_stallCount++;
+  }
+
   if (ret == -EAGAIN)
     return -EAGAIN; // the source stalled, ffmpeg reads this as "try again"
 
