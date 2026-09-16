@@ -104,6 +104,14 @@ CGUIWindowVideoBase::CGUIWindowVideoBase(int id, const std::string &xmlFile)
 
 CGUIWindowVideoBase::~CGUIWindowVideoBase() = default;
 
+void CGUIWindowVideoBase::FreeResources(bool forceUnload)
+{
+  if (forceUnload)
+    m_thumbLoader.StopThread();
+
+  CGUIMediaWindow::FreeResources(forceUnload);
+}
+
 bool CGUIWindowVideoBase::OnAction(const CAction &action)
 {
   if (action.GetID() == ACTION_SCAN_ITEM)
@@ -131,8 +139,9 @@ bool CGUIWindowVideoBase::OnMessage(CGUIMessage& message)
   switch ( message.GetMessage() )
   {
   case GUI_MSG_WINDOW_DEINIT:
-    if (m_thumbLoader.IsLoading())
-      m_thumbLoader.StopThread();
+    // Don't wait for the item being loaded: on a slow share that read can take tens
+    // of seconds. A forced resource unload joins it before the texture cache goes.
+    m_thumbLoader.StopAsync();
     m_database.Close();
     break;
 

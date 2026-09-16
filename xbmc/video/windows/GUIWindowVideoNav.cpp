@@ -111,10 +111,6 @@ bool CGUIWindowVideoNav::OnMessage(CGUIMessage& message)
   case GUI_MSG_WINDOW_RESET:
     m_vecItems->SetPath("");
     break;
-  case GUI_MSG_WINDOW_DEINIT:
-    if (m_thumbLoader.IsLoading())
-      m_thumbLoader.StopThread();
-    break;
   case GUI_MSG_WINDOW_INIT:
     {
       /* We don't want to show Autosourced items (ie removable pendrives, memorycards) in Library mode */
