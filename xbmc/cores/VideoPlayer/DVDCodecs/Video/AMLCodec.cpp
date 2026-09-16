@@ -2399,7 +2399,10 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
 
   CSysfsPath("/sys/class/video/freerun_mode", 1);
 
-  m_opened = true;
+  {
+    std::lock_guard<std::mutex> lock(m_timingMutex);
+    m_opened.store(true, std::memory_order_release);
+  }
 
   // vcodec is open, update speed if it was
   // changed before VideoPlayer called OpenDecoder.
@@ -2531,13 +2534,16 @@ void CAMLCodec::CloseDecoder()
 
   m_dll->codec_close(&am_private->vcodec);
   dumpfile_close(am_private);
-  m_opened = false;
   m_trimWasPassthrough = false;
 
-  // After m_opened, so a frame still queued in the renderer cannot tick this
-  // back to life: the measured path belongs to this decoder, and whatever plays
-  // next may not use this renderer at all.
-  CAMLLatency::GetInstance().Forget();
+  // A frame still queued in the renderer holds this codec and can tick it: take
+  // the retirement and the Forget together, so a tick either runs wholly before
+  // this or observes the closed state and publishes nothing.
+  {
+    std::lock_guard<std::mutex> lock(m_timingMutex);
+    m_opened.store(false, std::memory_order_release);
+    CAMLLatency::GetInstance().Forget();
+  }
 
   am_packet_release(&am_private->am_pkt);
   am_private->extradata = {};
@@ -2858,9 +2864,13 @@ void CAMLCodec::SetPollDevice(int dev)
 
 void CAMLCodec::LatencyTick(uint64_t omxPts)
 {
-  CDVDClock* clock = m_hints.pClock;
+  std::lock_guard<std::mutex> lock(m_timingMutex);
 
-  if (!m_opened || !clock || omxPts == DVD_NOPTS_VALUE)
+  if (!m_opened.load(std::memory_order_acquire) || omxPts == DVD_NOPTS_VALUE)
+    return;
+
+  CDVDClock* clock = m_hints.pClock;
+  if (!clock)
     return;
 
   // Trick play and a slewed clock have no steady relationship to measure
@@ -2983,8 +2993,13 @@ void CAMLCodec::LatencyTick(uint64_t omxPts)
 
 void CAMLCodec::GenlockTick(uint64_t omxPts)
 {
+  std::lock_guard<std::mutex> lock(m_timingMutex);
+
+  if (!m_opened.load(std::memory_order_acquire) || omxPts == DVD_NOPTS_VALUE)
+    return;
+
   CDVDClock* clock = m_hints.pClock;
-  if (!m_opened || !clock || omxPts == DVD_NOPTS_VALUE)
+  if (!clock)
     return;
 
   // Trick play and live streams have the player driving the clock, so there is

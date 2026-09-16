@@ -108,7 +108,7 @@ private:
   std::string   GetHDRStaticMetadata(bool dv_enable);
 
   DllLibAmCodec   *m_dll;
-  bool             m_opened;
+  std::atomic<bool> m_opened;
   //! Whether the audio was a bitstream last frame, so the trim is given back
   //! once on the way out rather than on every frame after it.
   bool             m_trimWasPassthrough{false};
@@ -141,6 +141,8 @@ private:
 
   PosixFilePtr     m_amlVideoFile;
   std::mutex       m_amlVideoFileMutex;
+  //! Serialises the renderer's timing callbacks against decoder close.
+  std::mutex       m_timingMutex;
   std::string      m_defaultVfmMap;
 
   static std::atomic_flag  m_pollSync;
