@@ -263,6 +263,9 @@ struct CacheInfo
   double level; // current cache level
   double offset; // percentage of file ahead of current position
   double time; // estimated playback time of current cached bytes
+  double forwardTime; // seconds of content cached ahead, at the file's average bitrate
+  bool endCached; // the rest of the file is already cached
+  bool endOfInput; // the source has no more data to give
   bool valid;
 };
 
@@ -481,6 +484,7 @@ protected:
 
   void HandleMessages();
   void HandlePlaySpeed();
+  bool TryEnterSourceUnderrunHold();
   bool IsInMenuInternal() const;
   void SynchronizeDemuxer();
   void QueueAutoSceneSkip(std::chrono::milliseconds seekTime);
@@ -563,6 +567,11 @@ protected:
 
   ECacheState  m_caching;
   XbmcThreads::EndTime<> m_cachingTimer;
+  bool m_srcUnderrunHold{false};
+  bool m_srcUnderrunResuming{false};
+  CacheInfo m_srcCache{};
+  XbmcThreads::EndTime<> m_srcUnderrunCooldown;
+  XbmcThreads::EndTime<> m_srcUnderrunProbe;
 
   std::unique_ptr<CProcessInfo> m_processInfo;
 
