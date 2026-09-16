@@ -19,6 +19,7 @@
 #include <array>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -458,6 +459,19 @@ public:
    \sa SetVideoSettings
    */
   bool GetVideoSettings(const std::string &filePath, CVideoSettings &settings);
+
+  /*!
+   * \brief Retrieve the video settings of many files with a few queries
+   * \param fileIds ids of the files, looked up in chunks
+   * \param settings receives one entry per id that was looked up, empty if the file has no stored
+   * settings. Ids of a chunk that failed or was not reached are left out, and entries already in
+   * the map are kept.
+   * \param abort optional, checked before each chunk; the lookup stops when it returns true
+   * \return true if every chunk was looked up, false if the lookup was stopped or failed
+   */
+  bool GetVideoSettingsForFiles(const std::vector<int>& fileIds,
+                                std::unordered_map<int, std::optional<CVideoSettings>>& settings,
+                                const std::function<bool()>& abort = {});
 
   /*! \brief Set video settings for the specified file path
    \param fileItem to set the settings for
