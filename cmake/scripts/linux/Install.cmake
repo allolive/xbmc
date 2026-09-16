@@ -4,6 +4,9 @@ else()
   set(USE_X11 0)
 endif()
 
+# print neither "Installing" nor "Up-to-date" messages
+set(CMAKE_INSTALL_MESSAGE NEVER)
+
 # CMake config
 set(APP_BINARY ${APP_NAME_LC}${APP_BINARY_SUFFIX})
 set(APP_PREFIX ${prefix})
