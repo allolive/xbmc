@@ -58,6 +58,9 @@ public:
   int AddData(uint8_t *data, unsigned int size, uint8_t **buffer = NULL, unsigned int *bufferSize = 0);
 
   void SetCoreOnly(bool value) { m_coreOnly = value; }
+  void SetDefeatAC3DialNorm(bool value) { m_defeatAC3DialNorm = value; }
+  void SetDefeatTrueHDDialNorm(bool value) { m_defeatTrueHDDialNorm = value; }
+  void SetDefeatDTSDialNorm(bool value) { m_defeatDTSDialNorm = value; }
   unsigned int IsValid() const { return m_hasSync; }
   unsigned int GetSampleRate() const { return m_info.m_sampleRate; }
   unsigned int GetChannels() const { return m_info.m_channels; }
@@ -80,6 +83,9 @@ private:
 
   CAEStreamInfo m_info;
   bool m_coreOnly = false;
+  bool m_defeatAC3DialNorm = false;
+  bool m_defeatTrueHDDialNorm = false;
+  bool m_defeatDTSDialNorm = false;
   unsigned int m_needBytes = 0;
   ParseFunc m_syncFunc;
   bool m_hasSync = false;
@@ -91,6 +97,8 @@ private:
   AVCRC m_crcTrueHD[1024];  /* TrueHD crc table */
 
   void GetPacket(uint8_t **buffer, unsigned int *bufferSize);
+  void DefeatAC3DialNorm(uint8_t* data, unsigned int size);
+  void DefeatDTSDialNorm(uint8_t* data, unsigned int size);
   unsigned int DetectType(uint8_t *data, unsigned int size);
   bool TrySyncAC3(uint8_t *data, unsigned int size, bool resyncing, bool wantEAC3dependent);
   unsigned int SyncAC3(uint8_t *data, unsigned int size);

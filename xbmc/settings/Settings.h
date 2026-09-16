@@ -424,6 +424,7 @@ public:
   static constexpr auto SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH = "audiooutput.truehdpassthrough";
   static constexpr auto SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH = "audiooutput.dtshdpassthrough";
   static constexpr auto SETTING_AUDIOOUTPUT_DTSHDCOREFALLBACK = "audiooutput.dtshdcorefallback";
+  static constexpr auto SETTING_COREELEC_AUDIO_DIALNORMDEFEAT = "coreelec.audio.dialnormdefeat";
   static constexpr auto SETTING_AUDIOOUTPUT_VOLUMESTEPS = "audiooutput.volumesteps";
   static constexpr auto SETTING_AUDIOOUTPUT_LOWLATENCY = "audiooutput.lowlatency";
   static constexpr auto SETTING_INPUT_PERIPHERALS = "input.peripherals";

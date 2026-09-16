@@ -4113,6 +4113,25 @@
           </dependencies>
           <control type="list" format="string" />
         </setting>
+        <setting id="coreelec.audio.dialnormdefeat" type="list[integer]" label="55001" help="55002">
+          <level>2</level>
+          <constraints>
+            <options>
+              <option label="55003">0</option> <!-- AC-3 / E-AC-3 -->
+              <option label="55004">1</option> <!-- TrueHD Atmos -->
+              <option label="55011">2</option> <!-- DTS -->
+            </options>
+            <delimiter>,</delimiter>
+            <minimumitems>0</minimumitems>
+          </constraints>
+          <default>0,1,2</default>
+          <dependencies>
+            <dependency type="enable" setting="audiooutput.passthrough" operator="is">true</dependency>
+          </dependencies>
+          <control type="list" format="string">
+            <multiselect>true</multiselect>
+          </control>
+        </setting>
       </group>
     </category>
     <category id="cache" label="439" help="36399">

@@ -25706,3 +25706,34 @@ msgstr ""
 msgctxt "#40804"
 msgid "{0:.1f} dB"
 msgstr ""
+
+#. Setting label for dialogue normalisation defeat
+#: system/settings/settings.xml
+msgctxt "#55001"
+msgid "Dialogue normalisation defeat (0 dB)"
+msgstr ""
+
+#. Setting help for dialogue normalisation defeat
+#: system/settings/settings.xml
+msgctxt "#55002"
+msgid "Force the dialogue normalisation value to 0 dB in the selected passthrough formats, so the receiver does not turn dialogue down. DD+ Atmos streams are always left untouched, as changing them breaks Atmos. The attenuation this removes is headroom the mix may rely on, so on titles mastered close to full scale the loudest moments can overload the receiver and make it mute for about a second. Deselect the format if that happens. Takes effect from the next playback."
+msgstr ""
+
+#. Dialogue normalisation defeat format: AC-3 and E-AC-3
+#: system/settings/settings.xml
+msgctxt "#55003"
+msgid "AC-3 / E-AC-3"
+msgstr ""
+
+#. Dialogue normalisation defeat format: TrueHD Atmos
+#: system/settings/settings.xml
+msgctxt "#55004"
+msgid "TrueHD Atmos"
+msgstr ""
+
+#. Dialogue normalisation defeat format: DTS family
+#: system/settings/settings.xml
+msgctxt "#55011"
+msgid "DTS / DTS-HD / DTS:X"
+msgstr ""
+
