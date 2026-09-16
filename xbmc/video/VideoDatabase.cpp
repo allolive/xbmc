@@ -5353,6 +5353,41 @@ void CVideoDatabase::GetUniqueIDs(int media_id, const std::string &media_type, C
   }
 }
 
+namespace
+{
+void ReadVideoSettingsRow(Dataset& ds, CVideoSettings& settings)
+{
+  settings.m_AudioDelay = ds.fv("AudioDelay").get_asFloat();
+  settings.m_AudioStream = ds.fv("AudioStream").get_asInt();
+  settings.m_Brightness = ds.fv("Brightness").get_asFloat();
+  settings.m_Contrast = ds.fv("Contrast").get_asFloat();
+  settings.m_CustomPixelRatio = ds.fv("PixelRatio").get_asFloat();
+  settings.m_CustomNonLinStretch = ds.fv("NonLinStretch").get_asBool();
+  settings.m_NoiseReduction = ds.fv("NoiseReduction").get_asFloat();
+  settings.m_PostProcess = ds.fv("PostProcess").get_asBool();
+  settings.m_Sharpness = ds.fv("Sharpness").get_asFloat();
+  settings.m_CustomZoomAmount = ds.fv("ZoomAmount").get_asFloat();
+  settings.m_CustomVerticalShift = ds.fv("VerticalShift").get_asFloat();
+  settings.m_Gamma = ds.fv("Gamma").get_asFloat();
+  settings.m_SubtitleDelay = ds.fv("SubtitleDelay").get_asFloat();
+  settings.m_SubtitleOn = ds.fv("SubtitlesOn").get_asBool();
+  settings.m_SubtitleStream = ds.fv("SubtitleStream").get_asInt();
+  settings.m_ViewMode = ds.fv("ViewMode").get_asInt();
+  settings.m_ResumeTime = ds.fv("ResumeTime").get_asInt();
+  settings.m_InterlaceMethod = (EINTERLACEMETHOD)ds.fv("Deinterlace").get_asInt();
+  settings.m_VolumeAmplification = ds.fv("VolumeAmplification").get_asFloat();
+  settings.m_ScalingMethod = (ESCALINGMETHOD)ds.fv("ScalingMethod").get_asInt();
+  settings.m_StereoMode = ds.fv("StereoMode").get_asInt();
+  settings.m_StereoInvert = ds.fv("StereoInvert").get_asBool();
+  settings.m_VideoStream = ds.fv("VideoStream").get_asInt();
+  settings.m_ToneMapMethod = static_cast<ETONEMAPMETHOD>(ds.fv("TonemapMethod").get_asInt());
+  settings.m_ToneMapParam = ds.fv("TonemapParam").get_asFloat();
+  settings.m_Orientation = ds.fv("Orientation").get_asInt();
+  settings.m_CenterMixLevel = ds.fv("CenterMixLevel").get_asInt();
+  settings.m_isDefaultVideoSettings = false;
+}
+} // namespace
+
 bool CVideoDatabase::GetVideoSettings(const CFileItem &item, CVideoSettings &settings)
 {
   return GetVideoSettings(GetFileId(item), settings);
@@ -5380,36 +5415,8 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
 
     if (m_pDS->num_rows() > 0)
     { // get the video settings info
-      settings.m_AudioDelay = m_pDS->fv("AudioDelay").get_asFloat();
-      settings.m_AudioStream = m_pDS->fv("AudioStream").get_asInt();
-      settings.m_Brightness = m_pDS->fv("Brightness").get_asFloat();
-      settings.m_Contrast = m_pDS->fv("Contrast").get_asFloat();
-      settings.m_CustomPixelRatio = m_pDS->fv("PixelRatio").get_asFloat();
-      settings.m_CustomNonLinStretch = m_pDS->fv("NonLinStretch").get_asBool();
-      settings.m_NoiseReduction = m_pDS->fv("NoiseReduction").get_asFloat();
-      settings.m_PostProcess = m_pDS->fv("PostProcess").get_asBool();
-      settings.m_Sharpness = m_pDS->fv("Sharpness").get_asFloat();
-      settings.m_CustomZoomAmount = m_pDS->fv("ZoomAmount").get_asFloat();
-      settings.m_CustomVerticalShift = m_pDS->fv("VerticalShift").get_asFloat();
-      settings.m_Gamma = m_pDS->fv("Gamma").get_asFloat();
-      settings.m_SubtitleDelay = m_pDS->fv("SubtitleDelay").get_asFloat();
-      settings.m_SubtitleOn = m_pDS->fv("SubtitlesOn").get_asBool();
-      settings.m_SubtitleStream = m_pDS->fv("SubtitleStream").get_asInt();
-      settings.m_ViewMode = m_pDS->fv("ViewMode").get_asInt();
-      settings.m_ResumeTime = m_pDS->fv("ResumeTime").get_asInt();
-      settings.m_InterlaceMethod = (EINTERLACEMETHOD)m_pDS->fv("Deinterlace").get_asInt();
-      settings.m_VolumeAmplification = m_pDS->fv("VolumeAmplification").get_asFloat();
-      settings.m_ScalingMethod = (ESCALINGMETHOD)m_pDS->fv("ScalingMethod").get_asInt();
-      settings.m_StereoMode = m_pDS->fv("StereoMode").get_asInt();
-      settings.m_StereoInvert = m_pDS->fv("StereoInvert").get_asBool();
-      settings.m_VideoStream = m_pDS->fv("VideoStream").get_asInt();
-      settings.m_ToneMapMethod =
-          static_cast<ETONEMAPMETHOD>(m_pDS->fv("TonemapMethod").get_asInt());
-      settings.m_ToneMapParam = m_pDS->fv("TonemapParam").get_asFloat();
-      settings.m_Orientation = m_pDS->fv("Orientation").get_asInt();
-      settings.m_CenterMixLevel = m_pDS->fv("CenterMixLevel").get_asInt();
+      ReadVideoSettingsRow(*m_pDS, settings);
       m_pDS->close();
-      settings.m_isDefaultVideoSettings = false;
       return true;
     }
     m_pDS->close();
