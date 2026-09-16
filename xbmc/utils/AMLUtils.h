@@ -8,6 +8,8 @@
 
 #include "utils/StreamDetails.h"
 
+#include <optional>
+
 enum AML_SUPPORT_H264_4K2K
 {
   AML_SUPPORT_H264_4K2K_UNINIT = -1,
@@ -63,3 +65,35 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType);
 bool aml_video_started();
 int aml_amdv_wait(StreamHdrType hdrType);
 void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int view_mode);
+
+//! \brief Microseconds since the display began painting the frame on screen,
+//! from the DRM vblank timestamp. Empty if DRM declines or the reading is older
+//! than maxAgeUs. App thread only.
+std::optional<double> aml_since_frame_start_us(double maxAgeUs);
+
+//! \brief Microseconds on CLOCK_MONOTONIC, the base the vblank age is measured
+//! against. Not CurrentHostCounter(), which is a different clock entirely.
+double aml_monotonic_us();
+
+//! \brief The display's vblank counter and how long ago that vblank was. The
+//! counter difference between two readings is an exact whole number of refresh
+//! periods - no timebase, no jitter, nothing to fold - and the age is what the
+//! frame on screen is measured against.
+std::optional<std::pair<uint64_t, double>> aml_vblank_seq_and_age(double maxAgeUs);
+
+//! \brief The timestamp of the frame the driver has on screen, in the 90kHz
+//! ticks it stores natively. Kept in ticks so it can be compared for equality:
+//! the kernel truncates once when it checks a frame in, so a microsecond round
+//! trip does not come back to the same number.
+std::optional<uint32_t> aml_displayed_pts_ticks();
+
+//! \brief What CRenderManager adds when it schedules a frame, in master clock
+//! units, without the vblank term that only the frame loop can use. See
+//! CRenderManager::PrepareNextRender().
+double aml_render_display_latency(StreamHdrType hdrType, float audioDelay);
+double aml_render_chosen_offset(StreamHdrType hdrType, float audioDelay);
+
+//! \brief How many times the display shows each frame of a stream at fps.
+//! Zero if either rate is unknown, or if the content outruns the display.
+//! Callers apply their own tolerance; CheckEnableClockSync() uses 0.0005.
+double aml_refreshes_per_frame(double displayRate, double fps);

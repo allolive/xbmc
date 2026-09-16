@@ -8954,6 +8954,20 @@ msgctxt "#14304"
 msgid "RDS Radio"
 msgstr ""
 
+#. Option for setting #14314 - generate a CM v4.0 Dolby Vision RPU
+#: system/settings/settings.xml
+msgctxt "#14305"
+msgid "CM v4.0"
+msgstr ""
+
+#. Option for setting #14314 - generate a CM v2.9 Dolby Vision RPU
+#: system/settings/settings.xml
+msgctxt "#14306"
+msgid "CM v2.9"
+msgstr ""
+
+#empty strings from id 14307 to 14309
+
 #: system/settings/settings.xml
 msgctxt "#14310"
 msgid "Tone map SDR to Dolby Vision"
@@ -8974,7 +8988,19 @@ msgctxt "#14313"
 msgid "Intended for Dolby Vision enabled displays. HDR content will be tone mapped by Dolby Vision VS-Engine."
 msgstr ""
 
-#empty strings from id 14305 to 15010
+#. Setting to convert HDR10+ dynamic metadata to Dolby Vision profile 8.1
+#: system/settings/settings.xml
+msgctxt "#14314"
+msgid "Convert HDR10+ to Dolby Vision"
+msgstr ""
+
+#. Help text of setting with label #14314
+#: system/settings/settings.xml
+msgctxt "#14315"
+msgid "Play HDR10+ video as Dolby Vision. Needs a TV that supports Dolby Vision. Video that already has its own Dolby Vision is left as it is.[CR][CR]CM v4.0 carries an average brightness that CM v2.9 has no field for, so it should be more accurate; not every TV uses it."
+msgstr ""
+
+#empty strings from id 14322 to 15010
 
 #: system/settings/settings.xml
 msgctxt "#14400"
@@ -9121,6 +9147,42 @@ msgstr ""
 
 msgctxt "#14427"
 msgid "Player-Led"
+msgstr ""
+
+#. Setting to trim the audio clock so sound and picture stay aligned
+#: system/settings/settings.xml
+msgctxt "#14316"
+msgid "Audio passthrough A/V sync"
+msgstr ""
+
+#. Help text of setting with label #14316 "Audio passthrough A/V sync"
+#: system/settings/settings.xml
+msgctxt "#14317"
+msgid "Corrects a standing offset between sound and picture by gently trimming the audio clock. Stronger settings clear a large drift sooner, though never more accurately, and make no difference to small ones. Some receivers and DACs will not follow a shifted clock - if yours clicks, mutes or drops out, choose a lower strength or turn it off. Has no effect on PCM output."
+msgstr ""
+
+#. Option for setting #14316 "Audio passthrough A/V sync"
+#: system/settings/settings.xml
+msgctxt "#14318"
+msgid "Light"
+msgstr ""
+
+#. Option for setting #14316 "Audio passthrough A/V sync"
+#: system/settings/settings.xml
+msgctxt "#14319"
+msgid "Medium"
+msgstr ""
+
+#. Option for setting #14316 "Audio passthrough A/V sync"
+#: system/settings/settings.xml
+msgctxt "#14320"
+msgid "Strong"
+msgstr ""
+
+#. Group label for the CoreELEC passthrough audio settings
+#: system/settings/settings.xml
+msgctxt "#14321"
+msgid "Passthrough Audio"
 msgstr ""
 
 #: xbmc/music/MusicDatabase.cpp
@@ -25644,3 +25706,34 @@ msgstr ""
 msgctxt "#40804"
 msgid "{0:.1f} dB"
 msgstr ""
+
+#. Setting label for dialogue normalisation defeat
+#: system/settings/settings.xml
+msgctxt "#55001"
+msgid "Dialogue normalisation defeat (0 dB)"
+msgstr ""
+
+#. Setting help for dialogue normalisation defeat
+#: system/settings/settings.xml
+msgctxt "#55002"
+msgid "Force the dialogue normalisation value to 0 dB in the selected passthrough formats, so the receiver does not turn dialogue down. DD+ Atmos streams are always left untouched, as changing them breaks Atmos. The attenuation this removes is headroom the mix may rely on, so on titles mastered close to full scale the loudest moments can overload the receiver and make it mute for about a second. Deselect the format if that happens. Takes effect from the next playback."
+msgstr ""
+
+#. Dialogue normalisation defeat format: AC-3 and E-AC-3
+#: system/settings/settings.xml
+msgctxt "#55003"
+msgid "AC-3 / E-AC-3"
+msgstr ""
+
+#. Dialogue normalisation defeat format: TrueHD Atmos
+#: system/settings/settings.xml
+msgctxt "#55004"
+msgid "TrueHD Atmos"
+msgstr ""
+
+#. Dialogue normalisation defeat format: DTS family
+#: system/settings/settings.xml
+msgctxt "#55011"
+msgid "DTS / DTS-HD / DTS:X"
+msgstr ""
+

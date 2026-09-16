@@ -14,6 +14,7 @@
 #include "DVDInputStreams/DVDInputStreamBluray.h"
 #endif
 #include "DVDInputStreams/DVDInputStreamFFmpeg.h"
+#include "DVDInputStreams/DVDInputStreamFile.h"
 #include "ServiceBroker.h"
 #include "URL.h"
 #include "Util.h"
@@ -42,6 +43,7 @@
 #include "windowing/amlogic/WinSystemAmlogic.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -184,8 +186,14 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
   int len = pInputStream->Read(buf, size);
   if (len == 0)
     return AVERROR_EOF;
-  else
-    return len;
+  // Stopped while the input waited out a stall: unwind as an abort, not a read error.
+  if (len == -EAGAIN)
+  {
+    const auto& fileInput = static_cast<CDVDDemuxFFmpeg*>(h)->m_fileInput;
+    if (fileInput && fileInput->Aborted())
+      return AVERROR_EXIT;
+  }
+  return len;
 }
 /*
 static int dvd_file_write(URLContext* h, uint8_t* buf, int size)
@@ -234,8 +242,17 @@ CDVDDemuxFFmpeg::~CDVDDemuxFFmpeg()
 
 bool CDVDDemuxFFmpeg::Aborted()
 {
-  if (m_timeout.IsTimePast())
+  if (m_fileInput && m_fileInput->Aborted())
     return true;
+
+  if (m_timeout.IsTimePast())
+  {
+    // Time the input spent waiting out a stalled source does not count.
+    if (!m_fileInput || m_fileInput->GetStallCount() == m_timeoutStallCount)
+      return true;
+    m_timeoutStallCount = m_fileInput->GetStallCount();
+    m_timeout.Set(m_timeout.GetInitialTimeoutValue());
+  }
 
   std::shared_ptr<CDVDInputStreamFFmpeg> input = std::dynamic_pointer_cast<CDVDInputStreamFFmpeg>(m_pInput);
   if (input && input->Aborted())
@@ -260,6 +277,7 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
     return false;
 
   m_pInput = pInput;
+  m_fileInput = std::dynamic_pointer_cast<CDVDInputStreamFile>(m_pInput);
   strFile = m_pInput->GetFileName();
 
   if (!m_pInput->GetContent().empty())
@@ -751,6 +769,7 @@ void CDVDDemuxFFmpeg::Dispose()
 
   DisposeStreams();
 
+  m_fileInput.reset();
   m_pInput = NULL;
 }
 
@@ -1094,7 +1113,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
     {
       // assume we are not eof
       if (m_pFormatContext->pb)
+      {
         m_pFormatContext->pb->eof_reached = 0;
+        // ffmpeg latches a stalled read next to the eof flag and hands it back on
+        // every later read. Only that one is cleared; a real error still stands.
+        if (m_pFormatContext->pb->error == AVERROR(EAGAIN))
+          m_pFormatContext->pb->error = 0;
+      }
 
       // check for saved packet after a program change
       if (m_pkt.result < 0)

@@ -8,6 +8,9 @@
 
 
 #include "AMLCodec.h"
+
+#include "AMLAudioTrim.h"
+#include "AMLLatency.h"
 #include "DynamicDll.h"
 
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
@@ -43,12 +46,18 @@
 #include <linux/videodev2.h>
 #include <sys/poll.h>
 #include <chrono>
+#include <exception>
 #include <thread>
 #include "aom_integer.h"
 #include "obu_util.h"
 
 namespace
 {
+//! The largest audio offset worth honouring, in seconds. Well past anything a
+//! viewer sets by hand, and short of the range where a mistaken sign would be
+//! driving the clock somewhere absurd.
+constexpr double MAX_AUDIO_OFFSET_S = 1.0;
+
 
 std::mutex pollSyncMutex;
 
@@ -651,6 +660,7 @@ static int write_header(am_private_t *para, am_packet_t *pkt)
                 return PLAYER_SUCCESS;
             }
         }
+        int eagain_retries = 0;
         while (1) {
             write_bytes = para->m_dll->codec_write(pkt->codec, pkt->hdr->data + len, pkt->hdr->size - len);
             if (write_bytes < 0 || write_bytes > (pkt->hdr->size - len)) {
@@ -658,6 +668,11 @@ static int write_header(am_private_t *para, am_packet_t *pkt)
                     CLog::Log(LOGDEBUG, "ERROR:write header failed!");
                     return PLAYER_WR_FAILED;
                 } else {
+                    if (++eagain_retries > 100) {
+                        CLog::Log(LOGDEBUG, "ERROR:write header timed out (EAGAIN)!");
+                        return PLAYER_WR_FAILED;
+                    }
+                    usleep(RW_WAIT_TIME);
                     continue;
                 }
             } else {
@@ -1309,7 +1324,13 @@ int av1_add_frame_dec_info(am_private_t *para)
   am_packet_t *pkt = &para->am_pkt;
 
   unsigned int dst_frame_size = 0;
-  uint8_t *dst_data = (uint8_t *)calloc(1, pkt->data_size + 4096);
+  // av1_parser_frame prepends a 20-byte header per OBU. The smallest OBU it will
+  // consume is two bytes - a header byte and a leb128 zero size, which is what a
+  // run of temporal delimiters looks like - so at most data_size/2 of them come
+  // out as data_size + 20 * data_size/2, eleven times the payload.
+  uint8_t *dst_data = (uint8_t *)calloc(1, (size_t)pkt->data_size * 11 + 4096);
+  if (!dst_data)
+    return PLAYER_NOMEM;
   av1_parser_frame(0, pkt->data, pkt->data + pkt->data_size, dst_data, &dst_frame_size, NULL, NULL);
 
   if (dst_frame_size - pkt->data_size > 0)
@@ -1478,7 +1499,10 @@ static int wmv3_write_header(am_private_t *para, am_packet_t *pkt)
 {
     CLog::Log(LOGDEBUG, "wmv3_write_header");
     unsigned i, check_sum = 0;
-    unsigned data_len = para->extradata.GetSize() + 4;
+    size_t wmv3_extra = para->extradata.GetSize();
+    if (wmv3_extra > HDR_BUF_SIZE - 26)
+        wmv3_extra = HDR_BUF_SIZE - 26;
+    unsigned data_len = wmv3_extra + 4;
 
     pkt->hdr->data[0] = 0;
     pkt->hdr->data[1] = 0;
@@ -1515,8 +1539,8 @@ static int wmv3_write_header(am_private_t *para, am_packet_t *pkt)
     pkt->hdr->data[24] = (para->video_height >> 8) & 0xff;
     pkt->hdr->data[25] =  para->video_height & 0xff;
 
-    memcpy(pkt->hdr->data + 26, para->extradata.GetData(), para->extradata.GetSize());
-    pkt->hdr->size = para->extradata.GetSize() + 26;
+    memcpy(pkt->hdr->data + 26, para->extradata.GetData(), wmv3_extra);
+    pkt->hdr->size = wmv3_extra + 26;
     if (1) {
         pkt->codec = &para->vcodec;
     } else {
@@ -1530,8 +1554,20 @@ static int wmv3_write_header(am_private_t *para, am_packet_t *pkt)
 static int wvc1_write_header(am_private_t *para, am_packet_t *pkt)
 {
     CLog::Log(LOGDEBUG, "wvc1_write_header");
-    memcpy(pkt->hdr->data, para->extradata.GetData() + 1, para->extradata.GetSize() - 1);
-    pkt->hdr->size = para->extradata.GetSize() - 1;
+    size_t wvc1_extra = para->extradata.GetSize();
+    if (wvc1_extra < 1) {
+        CLog::Log(LOGDEBUG, "[wvc1_write_header] empty extradata!");
+        // Left describing nothing rather than whatever malloc returned: the header
+        // is only freed on the success path, so an error return leaves it live and
+        // write_header decides on this field.
+        pkt->hdr->size = 0;
+        return PLAYER_EMPTY_P;
+    }
+    wvc1_extra -= 1;
+    if (wvc1_extra > HDR_BUF_SIZE)
+        wvc1_extra = HDR_BUF_SIZE;
+    memcpy(pkt->hdr->data, para->extradata.GetData() + 1, wvc1_extra);
+    pkt->hdr->size = wvc1_extra;
     if (1) {
         pkt->codec = &para->vcodec;
     } else {
@@ -2315,12 +2351,25 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
   {
     am_private->vcodec.config_len = static_cast<int>(config_data.size());
     am_private->vcodec.config = (char*)malloc(config_data.size() + 1);
-    config_data.copy(am_private->vcodec.config, config_data.size());
-    am_private->vcodec.config[am_private->vcodec.config_len] = '\0';
+    if (am_private->vcodec.config)
+    {
+      config_data.copy(am_private->vcodec.config, config_data.size());
+      am_private->vcodec.config[am_private->vcodec.config_len] = '\0';
+    }
+    else
+    {
+      am_private->vcodec.config_len = 0;
+      CLog::Log(LOGERROR, "CAMLCodec::OpenDecoder - config alloc failed");
+    }
   }
 
   if (am_private->vcodec.dec_mode == STREAM_TYPE_SINGLE)
+  {
+    // Recorded before the write: a write that throws half way still has to be
+    // put back.
+    m_vfmMapOverridden = true;
     SetVfmMap("default", "decoder amlvideo deinterlace amvideo");
+  }
 
   int ret = m_dll->codec_init(&am_private->vcodec);
   if (ret != CODEC_ERROR_NONE)
@@ -2353,6 +2402,7 @@ bool CAMLCodec::OpenDecoder(CDVDStreamInfo &hints, bool doviIsFEL)
   CSysfsPath("/sys/class/video/freerun_mode", 1);
 
   m_opened = true;
+
   // vcodec is open, update speed if it was
   // changed before VideoPlayer called OpenDecoder.
   SetSpeed(m_speed);
@@ -2370,7 +2420,10 @@ bool CAMLCodec::OpenAmlVideo(const CDVDStreamInfo &hints)
     return false;
   }
 
-  m_amlVideoFile = amlVideoFile;
+  {
+    std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
+    m_amlVideoFile = amlVideoFile;
+  }
   m_defaultVfmMap = GetVfmMap("default");
 
   return true;
@@ -2423,16 +2476,31 @@ std::string CAMLCodec::GetVfmMap(const std::string &name)
   std::string sectionMap;
   for (size_t i = 0; i < sections.size(); ++i)
   {
-    if (StringUtils::StartsWith(sections[i], name + " {"))
+    // The line is "[NN]  <id> { node(a) node }", so match the id against the
+    // token in front of the brace rather than the start of the line.
+    size_t brace = sections[i].find('{');
+    if (brace == std::string::npos)
+      continue;
+    std::string id = sections[i].substr(0, brace);
+    StringUtils::Trim(id);
+    if (!id.empty() && StringUtils::EndsWith(id, name) &&
+        (id.size() == name.size() || id[id.size() - name.size() - 1] == ' '))
     {
       sectionMap = sections[i];
       break;
     }
   }
 
-  int openingBracePos = sectionMap.find('{') + 1;
+  if (sectionMap.empty())
+    return sectionMap;
+
+  size_t openingBracePos = sectionMap.find('{') + 1;
   sectionMap = sectionMap.substr(openingBracePos, sectionMap.size() - openingBracePos - 1);
-  StringUtils::Replace(sectionMap, "(0)", "");
+  // Interior nodes carry their activity as "(0)" or "(1)"; the last is printed
+  // bare. The names are what is written back.
+  for (char digit = '0'; digit <= '9'; ++digit)
+    StringUtils::Replace(sectionMap, std::string("(") + digit + ")", "");
+  StringUtils::Trim(sectionMap);
 
   return sectionMap;
 }
@@ -2471,6 +2539,12 @@ void CAMLCodec::CloseDecoder()
   m_dll->codec_close(&am_private->vcodec);
   dumpfile_close(am_private);
   m_opened = false;
+  m_trimWasPassthrough = false;
+
+  // After m_opened, so a frame still queued in the renderer cannot tick this
+  // back to life: the measured path belongs to this decoder, and whatever plays
+  // next may not use this renderer at all.
+  CAMLLatency::GetInstance().Forget();
 
   am_packet_release(&am_private->am_pkt);
   am_private->extradata = {};
@@ -2478,7 +2552,10 @@ void CAMLCodec::CloseDecoder()
   am_private->hdr_buf.data = NULL;
 
   if (am_private->vcodec.config)
+  {
     free(am_private->vcodec.config);
+    am_private->vcodec.config = NULL;
+  }
 
   // return tsync to default so external apps work
   CSysfsPath("/sys/class/tsync/enable", 1);
@@ -2514,16 +2591,47 @@ void CAMLCodec::CloseDecoder()
 
 void CAMLCodec::CloseAmlVideo()
 {
-  m_amlVideoFile.reset();
+  PosixFilePtr closing;
+  {
+    std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
+    closing.swap(m_amlVideoFile);
+  }
+  // Dropped here rather than at the end of the scope, so the node is released at
+  // the same point as before. A frame still in flight holds its own reference.
+  closing.reset();
 
-  if (am_private->vcodec.dec_mode == STREAM_TYPE_SINGLE)
-    SetVfmMap("default", m_defaultVfmMap);
-
-  m_amlVideoFile = NULL;
+  // Put back only what this took away, and only if it took it. Nothing to give
+  // back if the read found no such map, and an empty one is a map that exists with
+  // no nodes - not worth restoring over a working chain.
+  if (m_vfmMapOverridden)
+  {
+    m_vfmMapOverridden = false;
+    if (!m_defaultVfmMap.empty())
+    {
+      try
+      {
+        SetVfmMap("default", m_defaultVfmMap);
+      }
+      catch (const std::exception& e)
+      {
+        // Reached from the codec's destructor, where an escape would terminate.
+        CLog::Log(LOGERROR, "CAMLCodec::{} - could not restore the vfm map: {}",
+                  __FUNCTION__, e.what());
+      }
+    }
+  }
 }
 
 void CAMLCodec::Reset()
 {
+  CAMLLatency::GetInstance().Restart();
+  m_genlock.Restart();
+
+  // The rate loop keeps its level and drops its measurement: a seek moves the
+  // audio error by however far the seek went, and an interval spanning that is
+  // not a measurement of any clock.
+  CAMLAudioTrim::GetInstance().Forget();
+
   CLog::Log(LOGDEBUG, "CAMLCodec::Reset");
 
   if (!m_opened)
@@ -2759,6 +2867,159 @@ void CAMLCodec::SetPollDevice(int dev)
   m_pollDevice = dev;
 }
 
+void CAMLCodec::LatencyTick(uint64_t omxPts)
+{
+  CDVDClock* clock = m_hints.pClock;
+
+  if (!m_opened || !clock || omxPts == DVD_NOPTS_VALUE)
+    return;
+
+  // Trick play and a slewed clock have no steady relationship to measure
+  // against, and a paused clock has none at all. Each of them also moves the
+  // clock by more than any drift will, so the drift baseline goes with them
+  // rather than counting a pause as a minute of the audio running slow.
+  if (m_speed != DVD_PLAYSPEED_NORMAL || m_processInfo.IsRealtimeStream() || clock->IsPaused() ||
+      clock->GetSpeedAdjust() != 0.0)
+  {
+    CAMLLatency::GetInstance().NoteClockDisturbed();
+
+    // The audio rate loop keeps its correction - the silicon has not changed
+    // speed because the picture stopped - but not its measurement, since a
+    // paused or slewed clock moves the error by hand.
+    CAMLAudioTrim::GetInstance().Forget();
+    return;
+  }
+
+  const double audioError = m_processInfo.GetAudioSyncError();
+
+  CAMLLatency::GetInstance().Update(*clock, omxPts, m_processInfo.GetVideoFps(), audioError,
+                                    m_processInfo.IsRenderClockSync());
+
+  // Only where the knob reaches. The trim moves mpll0, which clocks the framing a
+  // bitstream goes out in; samples take another path entirely, and on this box
+  // the loop measured a real drift there, moved its level across its whole range
+  // and saw nothing answer - standing down correctly, but only after several
+  // minutes of sixty parts per million applied to a clock that never heard it. The engine
+  // can resample samples in any case, so there was nothing here to win.
+  //
+  // Given back once on the way out rather than on every frame after it: the
+  // release is what clears a stand-down, and repeating it would erase the loop's
+  // memory of having given up as fast as it formed.
+  const bool passthrough = m_processInfo.GetAudioPassthrough();
+  if (!passthrough)
+  {
+    if (m_trimWasPassthrough)
+      CAMLAudioTrim::GetInstance().Release();
+    m_trimWasPassthrough = false;
+    return;
+  }
+  m_trimWasPassthrough = true;
+
+  // Where the viewer asked the audio to sit, rather than on top of the picture.
+  // Kodi's audio offset does not touch the audio at all: SetAVDelay feeds
+  // m_videoDelay into RenderManager's display latency, which moves which frame is
+  // shown at a given clock time - so it lands in the alignment half of the sum
+  // below, and a loop driving that sum to zero would take the viewer's setting
+  // back out over the couple of minutes it needs. Aiming at the setting instead
+  // of at zero holds it.
+  //
+  // Both of the renderer's chosen terms, not just the slider. The latency tweak
+  // from advancedsettings moves the picture for the same reason and by the same
+  // route, so a loop told about one and not the other would hold the viewer's
+  // offset and quietly take their display compensation back out.
+  const float set = m_processInfo.GetVideoSettings().m_AudioDelay;
+  const double wanted = aml_render_chosen_offset(m_hints.hdrType, set);
+
+  // Past what is worth honouring the offset loop stands down rather than aiming
+  // at a truncated target. Clamping the aim while the picture moves by the whole
+  // setting leaves a residue the loop can never take out: it rails at its slew
+  // limit for the rest of the title, walking the very setting it is supposed to
+  // be holding, and doing it silently - the drift follows the aim, so the
+  // stand-down watchdog sees a knob that is working perfectly. The rate loop is
+  // untouched by this and goes on nulling the drift; only the offset half stops.
+  const bool tooBig = std::abs(wanted) > MAX_AUDIO_OFFSET_S * DVD_TIME_BASE;
+
+  // Announced when it CHANGES, not merely when it is non-zero. This line is what
+  // tells a correct sign from an inverted one on a box, and the way to read it is
+  // to nudge the setting and watch - so one that reports the first value and then
+  // never speaks again is the one case it has to get right. Compared on the
+  // truncated figure, which also disposes of the float residue that stepping the
+  // offset up and back down with a remote leaves behind.
+  if (wanted != m_lastAudioOffset)
+  {
+    // The picture is about to be held or skipped by the whole difference, and
+    // nothing else tells the matcher that. Left unsaid it reads the hold as the
+    // picture having stopped and warns about frames that were never lost.
+    CAMLLatency::GetInstance().NoteClockDisturbed();
+
+    // One line, and a true one. Saying it is being held and then that it is not
+    // leaves the log contradicting itself in the place the sign is read from.
+    if (tooBig)
+      CLog::Log(LOGINFO,
+                "CAMLCodec: audio offset {:+.0f}ms is past what the trim will hold - leaving it "
+                "to the renderer",
+                wanted / 1000.0);
+    else if (wanted != 0.0)
+      CLog::Log(LOGINFO, "CAMLCodec: holding the audio offset at {:+.0f}ms rather than nulling it",
+                wanted / 1000.0);
+    else
+      CLog::Log(LOGINFO, "CAMLCodec: audio offset back to nominal");
+
+    m_lastAudioOffset = wanted;
+  }
+
+  std::optional<double> lead = CAMLLatency::GetInstance().Lead();
+
+  // Entering or leaving the stand-down steps the setpoint, and the bucket that
+  // spans the step holds a drift the loop asked for measured against an aim it no
+  // longer has. Settle() would read the difference as its own error and rail the
+  // integrator for minutes taking it back out. Dropping that one measurement
+  // costs a bucket and keeps the level, which is what Forget is for.
+  if (tooBig != m_offsetStoodDown)
+  {
+    m_offsetStoodDown = tooBig;
+    CAMLAudioTrim::GetInstance().Forget();
+  }
+
+  if (tooBig)
+    lead.reset();
+  else if (lead)
+    *lead -= wanted;
+
+  CAMLAudioTrim::GetInstance().Update(audioError == DVD_NOPTS_VALUE
+                                          ? std::nullopt
+                                          : std::optional<double>{audioError},
+                                      lead, clock->GetAbsoluteClock());
+}
+
+void CAMLCodec::GenlockTick(uint64_t omxPts)
+{
+  CDVDClock* clock = m_hints.pClock;
+  if (!m_opened || !clock || omxPts == DVD_NOPTS_VALUE)
+    return;
+
+  // Trick play and live streams have the player driving the clock, so there is
+  // no steady phase. IsPaused() as well as m_speed: a pause reaches the clock
+  // from the decode thread before the speed message reaches this one, and a
+  // display loss pauses the clock without sending one at all.
+  //
+  // Skip while the player slews the clock to refill its buffer too: ErrorAdjust
+  // declines a correction below 100ms while a speed adjust is running anyway.
+  //
+  // Each of these breaks the one rule the step detector rests on - that the
+  // clock and the reference it is derived from advance together - so the
+  // alignment is told to take a fresh reading rather than difference across the
+  // gap and read the whole of it as a step somebody made.
+  if (m_speed != DVD_PLAYSPEED_NORMAL || m_processInfo.IsRealtimeStream() || clock->IsPaused() ||
+      clock->GetSpeedAdjust() != 0.0)
+  {
+    m_genlock.Forget();
+    return;
+  }
+
+  m_genlock.Update(*clock, m_processInfo, m_hints.hdrType, static_cast<double>(omxPts));
+}
+
 int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
 {
   int ret;
@@ -2766,7 +3027,12 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
   vbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   vbuf.index = index;
 
-  if (!m_amlVideoFile)
+  PosixFilePtr amlVideoFile;
+  {
+    std::lock_guard<std::mutex> lock(m_amlVideoFileMutex);
+    amlVideoFile = m_amlVideoFile;
+  }
+  if (!amlVideoFile)
     return 0;
 
   if (drop)
@@ -2774,7 +3040,7 @@ int CAMLCodec::ReleaseFrame(const uint32_t index, bool drop)
 
   CLog::Log(LOGDEBUG, LOGVIDEO, "CAMLCodec::ReleaseFrame idx:{:d}, drop:{:d}", index, static_cast<int>(drop));
 
-  if ((ret = m_amlVideoFile->IOControl(VIDIOC_QBUF, &vbuf)) < 0)
+  if ((ret = amlVideoFile->IOControl(VIDIOC_QBUF, &vbuf)) < 0)
     CLog::Log(LOGERROR, "CAMLCodec::ReleaseFrame - VIDIOC_QBUF failed: {}", strerror(errno));
   return ret;
 }
@@ -2871,8 +3137,16 @@ CDVDVideoCodec::VCReturn CAMLCodec::GetPicture(VideoPicture *pVideoPicture)
 
     return CDVDVideoCodec::VC_PICTURE;
   }
-  else if (m_drain && m_buffer_level_ready && data_len == 0)
+  // the caller's drain loop neither waits nor reads its message queue
+  else if (m_drain && m_buffer_level_ready &&
+           (data_len == 0 || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout)))
+  {
+    if (data_len)
+      CLog::Log(LOGWARNING, "CAMLCodec::GetPicture: drain stalled, {:d} bytes left after {:d}ms",
+        data_len, elapsed_since_last_frame.count());
+
     return CDVDVideoCodec::VC_EOF;
+  }
   else if ((m_drain && m_buffer_level_ready) || (buffer_level > (streambuffer ? 100.0f : 10.0f)))
     return CDVDVideoCodec::VC_NONE;
   else if (ret != EAGAIN || elapsed_since_last_frame > std::chrono::seconds(m_decoder_timeout))
@@ -2890,6 +3164,13 @@ void CAMLCodec::SetSpeed(int speed)
 {
   if (m_speed == speed)
     return;
+
+  // Ahead of the tick's own guard, which a pause never reaches: no frame is
+  // presented while paused, so nothing would notice until the clock had already
+  // skipped the pause.
+  CAMLLatency::GetInstance().NoteClockDisturbed();
+  m_genlock.Restart();
+  CAMLAudioTrim::GetInstance().Forget();
 
   CLog::Log(LOGDEBUG, "CAMLCodec::SetSpeed, speed({:d})", speed);
 

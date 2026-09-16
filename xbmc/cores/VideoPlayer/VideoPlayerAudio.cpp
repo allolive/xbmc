@@ -31,6 +31,63 @@
 
 using namespace std::chrono_literals;
 
+namespace
+{
+//! Past this a reading is not a resync residue but something that has gone wrong
+//! - a stale timestamp, a seek the decoder has not caught up with. It is above
+//! the ordinary threshold anyway, so the correction still happens; what this
+//! saves is the one chance, for a reading worth spending it on.
+constexpr double ACQUIRE_LIMIT = DVD_MSEC_TO_TIME(500.0);
+
+//! Below this a correction is not worth a clock step, and more to the point it is
+//! below the rate loop's own jump guard - so it would land inside a drift bucket
+//! and be read as a rate rather than discarded as a step. Kept in step with that
+//! guard deliberately.
+constexpr double ACQUIRE_FLOOR = DVD_MSEC_TO_TIME(5.0);
+
+//! Readings allowed to arrive before an acquisition that has found nothing worth
+//! correcting lapses. Held indefinitely it would be spent much later on ordinary
+//! jitter, which is a clock step under a running picture - the thing the
+//! threshold exists to avoid.
+//!
+//! Counted as well as timed. The engine widens its own averaging window when a
+//! stream's timestamps jump - to six seconds, tripled again when it is resampling
+//! hard - so a wall clock alone could lapse the chance before the readings it is
+//! waiting for had been published at all. But readings alone are not a bound
+//! either: readings come seconds apart, so eight of them is a wait, and a correction
+//! that arrives minutes in is a clock step under a picture nobody is expecting
+//! one under. Whichever comes first.
+constexpr unsigned int ACQUIRE_READINGS = 8;
+constexpr double ACQUIRE_EXPIRY = 30.0 * DVD_TIME_BASE;
+
+//! Three readings must agree within this before the one chance is spent. The
+//! engine reports a mean over the last second, so a reading taken while the
+//! pipeline is still moving is a blend of where the audio was and where it now
+//! is - and the step sized from it lands short by the difference, permanently,
+//! because what is left is inside every threshold below it.
+//!
+//! Measured: a display mode change re-opens the audio sink a few hundred
+//! milliseconds before the acquisition falls due. The error plateaus at +153ms
+//! while the mean still reads +90ms; the clock moves 90 and 63 stands for the
+//! rest of the film. With no re-open the same code lands within a tenth of a
+//! millisecond, which is what says the sizing is right and only the timing is
+//! wrong.
+//! Two milliseconds, an order above the settled noise: consecutive windows agree
+//! to a fifth of a millisecond once the pipeline is still. Ten was fifty times
+//! that, wide enough to pass a ramp still forty milliseconds from where it was
+//! going.
+//!
+//! Or a twentieth of the reading, whichever is larger. A mean over a jittery
+//! source - a variable bitrate, a network, the messy timestamps that widened the
+//! window in the first place - moves by more than two milliseconds between
+//! windows while sitting perfectly still, and a fixed figure would refuse every
+//! reading on exactly the content most likely to need correcting. The ramp this
+//! has to reject moved sixty-three milliseconds in one window, so a twentieth
+//! turns it away with room to spare.
+constexpr double STATIONARY = DVD_MSEC_TO_TIME(2.0);
+constexpr double STATIONARY_FRACTION = 0.05;
+} // unnamed namespace
+
 class CDVDMsgAudioCodecChange : public CDVDMsg
 {
 public:
@@ -162,6 +219,10 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
 
   // shut down the adio_decode thread and wait for it
   StopThread(); // will set this->m_bStop to true
+
+  // After the thread that publishes it has been joined, not before: the drain
+  // above runs OutputPacket, which would put a live value back.
+  m_processInfo.SetAudioSyncError(DVD_NOPTS_VALUE);
 
   // destroy audio device
   CLog::Log(LOGINFO, "Closing audio device");
@@ -310,6 +371,10 @@ void CVideoPlayerAudio::Process()
         {
           CLog::Log(LOGINFO, "CVideoPlayerAudio::Process - stream stalled");
           m_stalled = true;
+    // Nothing will publish again until packets flow, and the reporter
+    // samples every frame: left standing, one stale reading is counted
+    // once per frame for as long as the audio is gone.
+    m_processInfo.SetAudioSyncError(DVD_NOPTS_VALUE);
         }
       }
       if (timeout == 0ms)
@@ -352,6 +417,10 @@ void CVideoPlayerAudio::Process()
       m_audioClock = 0;
       audioframe.nb_frames = 0;
       m_syncState = IDVDStreamPlayer::SYNC_STARTING;
+      // Nothing will publish again until packets flow, and the reporter
+      // samples every frame: left standing, one stale reading is counted
+      // once per frame for as long as the audio is gone.
+      m_processInfo.SetAudioSyncError(DVD_NOPTS_VALUE);
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))
     {
@@ -360,6 +429,10 @@ void CVideoPlayerAudio::Process()
       m_stalled = true;
       m_audioClock = 0;
       audioframe.nb_frames = 0;
+      // Nothing will publish again until packets flow, and the reporter
+      // samples every frame: left standing, one stale reading is counted
+      // once per frame for as long as the audio is gone.
+      m_processInfo.SetAudioSyncError(DVD_NOPTS_VALUE);
 
       if (sync)
       {
@@ -541,15 +614,141 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     audioframe.hasDownmix = true;
   }
 
+  // Published for every sync type - the engine measures the error in resample
+  // mode too, it is just corrected differently. It is read back and acted on.
+  // The vsync adjust goes back on because the engine measured against a clock
+  // that already had it (CAudioSinkAE::GetClock), and a reader comparing this
+  // with the picture needs both against the same one.
+  // A saturated reading is withheld as well as refused: it is the clamp, not a
+  // measurement, and a reader that acted on it would be acting on the same
+  // figure the correction above declines to use.
+  m_processInfo.SetAudioPassthrough(m_audioSink.IsPassthrough());
+  m_processInfo.SetAudioSyncError(
+      (m_audioSink.HasSyncError() && !m_audioSink.IsSyncErrorSaturated())
+          ? m_audioSink.GetSyncErrorRaw() + m_pClock->GetVsyncAdjust()
+          : DVD_NOPTS_VALUE);
+
   if (m_synctype == SYNC_DISCON)
   {
     double syncerror = m_audioSink.GetSyncError();
 
-    if (std::abs(syncerror) > DVD_MSEC_TO_TIME(m_disconAdjustTimeMs))
+    // A saturated reading is a lower bound on the error, not a measurement of
+    // it, and both copies are clamped - so there is nothing here worth acting
+    // on in either domain. Waiting costs one interval; stepping the clock by a
+    // clamp costs whatever the clamp happens to be.
+    if (m_audioSink.HasSyncError() && m_audioSink.IsSyncErrorSaturated())
+      syncerror = 0.0;
+
+    // Once after each resync, the threshold is not consulted. It exists to stop
+    // a settled stream being corrected for jitter, which is right; but what the
+    // resync leaves behind is not jitter, it is a standing offset, and one that
+    // is by construction too small to cross the threshold and too large to
+    // ignore. Correcting it once, here, is the difference between a title that
+    // starts where the last one did and a title that starts wherever the last
+    // frame boundary happened to fall.
+
+    // The clock tracks the flag on every path. The sink clears the flag in four
+    // places - a flush, a stream teardown, the engine leaving INSYNC, and the
+    // spend - and a timestamp left behind by any of them would be what the next
+    // acquisition got measured against, which is to say it would arrive already
+    // expired.
+    if (!m_audioSink.PeekSyncAcquisition())
     {
-      double correction = m_pClock->ErrorAdjust(syncerror, "CVideoPlayerAudio::OutputPacket");
+      m_acquireSince = 0.0;
+
+      // The pair below has to belong to the acquisition it guards. Nothing else
+      // clears it, and the engine stops reporting an error at all across a
+      // resync - so a reading kept from before a pause would be compared with
+      // the first one after it, which is not two consecutive readings of
+      // anything, and the gate would open on a reading it never checked.
+      m_haveRawPrev = false;
+      m_rawPrev = 0.0;
+      m_rawSettled = false;
+      m_rawSettledPrev = false;
+      m_rawReadings = 0;
+    }
+    else if (m_acquireSince == 0.0)
+      m_acquireSince = m_pClock->GetAbsoluteClock();
+    else if (m_rawReadings >= ACQUIRE_READINGS ||
+             m_pClock->GetAbsoluteClock() - m_acquireSince > ACQUIRE_EXPIRY)
+    {
+      m_audioSink.TakeSyncAcquisition();
+      m_acquireSince = 0.0;
+    }
+
+    // On the figure that will actually be applied, not the reported one: the
+    // floor has to mean the same thing as the step. Not while the vsync adjust
+    // is running, where the clock quantises to whole frames - a frame is not the
+    // residue this is looking for, and spending the one chance to move by one
+    // would be worse than leaving the residue alone. The genlock stands down in
+    // that regime too, for its own reasons.
+    const double errorRaw = m_audioSink.HasSyncError() ? m_audioSink.GetSyncErrorRaw() : 0.0;
+
+    // Only the changes count: the engine republishes about once a second, so
+    // consecutive packets mostly carry the same figure and comparing those would
+    // call anything stationary.
+    if (m_audioSink.HasSyncError() && errorRaw != m_rawPrev)
+    {
+      // Three in a row, not two: a ramp gentle enough to move less than the
+      // threshold between one reading and the next would otherwise pass while
+      // still well short of where it is going, and the chance would be spent
+      // short - which is the whole failure this exists to prevent, just at a
+      // shallower slope.
+      const double allowed = std::max(STATIONARY, STATIONARY_FRACTION * std::abs(errorRaw));
+      const bool pairAgrees = m_haveRawPrev && std::abs(errorRaw - m_rawPrev) < allowed;
+      m_rawSettled = pairAgrees && m_rawSettledPrev;
+      m_rawSettledPrev = pairAgrees;
+      m_rawPrev = errorRaw;
+      m_haveRawPrev = true;
+      ++m_rawReadings;
+    }
+    // Only where the argument for it holds. The residue this exists to remove is
+    // one the engine cannot remove itself: in passthrough its finest move is a
+    // whole IEC frame, twenty milliseconds, so it stops inside its own band and
+    // what is left is stranded. Carrying samples it has no such floor - it can
+    // move the audio by as little as it likes - so there is no stranded residue
+    // to go after, and correcting outside the threshold there would be a clock
+    // step for something the engine was going to take out anyway.
+    const bool acquire = m_audioSink.IsPassthrough() && m_audioSink.PeekSyncAcquisition() &&
+                         m_audioSink.HasSyncError() &&
+                         !m_audioSink.IsSyncErrorSaturated() && m_pClock->GetVsyncAdjust() == 0.0 &&
+                         m_pClock->GetSpeedAdjust() == 0.0 &&
+                         m_rawSettled && std::abs(errorRaw) > ACQUIRE_FLOOR &&
+                         std::abs(errorRaw) < ACQUIRE_LIMIT;
+
+    if (acquire || std::abs(syncerror) > DVD_MSEC_TO_TIME(m_disconAdjustTimeMs))
+    {
+      // Decided on the error the engine reports, but corrected by the one it
+      // measured. For TrueHD passthrough those are not the same number: the
+      // engine shrinks what it reports so a stream whose frames arrive unevenly
+      // does not provoke a correction every second, and that is a reasonable
+      // thing to do to a threshold. Using the same shrunken figure as the size
+      // of the step is not - the clock then moves a fraction of the way and
+      // stops, and what is left is by construction too small to try again.
+      // Measured at a title start: a 115ms offset answered with a 51.58ms step,
+      // leaving 63ms in place for the rest of the film.
+      // Never by a saturated reading. The engine clamps at 1s in sync and 5s out
+      // of it, and a seek that leaves the decoder reporting a stale timestamp
+      // makes the true error seconds wide - stepping the clock by the clamp
+      // would move it by that much on a number that is only a lower bound.
+      // The fallback is the reported error, which the guard above has zeroed.
+      const double actual = (m_audioSink.HasSyncError() &&
+                             !m_audioSink.IsSyncErrorSaturated())
+                                ? m_audioSink.GetSyncErrorRaw()
+                                : syncerror;
+      double correction = m_pClock->ErrorAdjust(actual, "CVideoPlayerAudio::OutputPacket");
       if (correction != 0)
       {
+        // Spent once the clock has moved, whichever path moved it. The residue
+        // it was held for is gone either way, and an acquisition left armed
+        // behind a correction is one that gets spent a second later on ordinary
+        // jitter - a clock step under a running picture, which is the thing the
+        // threshold is there to prevent.
+        m_audioSink.TakeSyncAcquisition();
+        m_acquireSince = 0.0;
+        if (acquire)
+          CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio:: acquisition {:.3f}",
+                    correction / DVD_TIME_BASE);
         m_audioSink.SetSyncErrorCorrection(-correction);
         m_disconAdjustCounter++;
         CLog::Log(LOGDEBUG, LOGAUDIO, "CVideoPlayerAudio:: sync error correctiom:{:.3f}", correction / DVD_TIME_BASE);

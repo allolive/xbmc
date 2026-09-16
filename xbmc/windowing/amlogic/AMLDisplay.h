@@ -8,12 +8,14 @@
 #include <gbm.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+#include <atomic>
 #include <memory>
 #include <unistd.h>
 #include <utility>
 #include <vector>
 
 #include "rendering/RenderSystemTypes.h"
+#include "threads/CriticalSection.h"
 #include "utils/HDRCapabilities.h"
 #include "windowing/Resolution.h"
 
@@ -84,6 +86,14 @@ public:
   virtual ~CAMLDRMUtils();
 
   int aml_get_drmDevice_handle() const { return m_fd; }
+  // The id, not the pointer, so a caller cannot be handed one that
+  // CleanAndClose() has freed. Zero means none is published and the
+  // caller stands down. Not a race as things stand: every reader of
+  // this and the teardown that frees m_crtc are both on the app
+  // thread. An integer is simply the right shape for something read
+  // this often, and an integer id is never dereferenced, so a stale
+  // read costs a stood-down caller rather than a fault.
+  uint32_t aml_get_drmCrtc_id() const { return m_crtcId.load(std::memory_order_relaxed); }
   void aml_init_drmDevice();
   void aml_drmDevice_vsync();
   std::string aml_get_drmDevice_mode();
@@ -136,8 +146,10 @@ private:
   drmModeConnection m_connection{DRM_MODE_DISCONNECTED};
   drmModeEncoderPtr m_encoder{nullptr};
   drmModeCrtcPtr m_crtc{nullptr};
+  std::atomic<uint32_t> m_crtcId{0};
   drmModeCrtcPtr m_orig_crtc{nullptr};
   drmModePlanePtr m_plane{nullptr};
+  CCriticalSection m_drmSection;
 
   int m_inFenceFd{-1};
   int m_outFenceFd{-1};
@@ -150,6 +162,7 @@ public:
 
   void aml_refresh_display_caps();
   int aml_get_Device_handle() const { return m_amlDRMUtils->aml_get_drmDevice_handle(); }
+  uint32_t aml_get_Crtc_id() const { return m_amlDRMUtils->aml_get_drmCrtc_id(); }
   void aml_init_drmDevice() { m_amlDRMUtils->aml_init_drmDevice(); }
   void aml_drmDevice_vsync() { m_amlDRMUtils->aml_drmDevice_vsync(); };
   bool aml_get_display_connected() const { return m_amlDRMUtils->aml_get_drmDevice_connected(); }

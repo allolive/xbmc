@@ -10,9 +10,18 @@
 #include <regex>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "AMLUtils.h"
+
+#include <cstdint>
+
+#include <cstring>
+
+#include <charconv>
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
+#include "settings/AdvancedSettings.h"
 #include "utils/log.h"
 #include "utils/StringUtils.h"
 #include "ServiceBroker.h"
@@ -21,9 +30,11 @@
 #include "settings/SettingsComponent.h"
 #include "platform/linux/SysfsPath.h"
 #include "windowing/amlogic/WinSystemAmlogic.h"
+#include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
 #include <amcodec/codec.h>
+#include <xf86drm.h>
 
 int aml_get_cpufamily_id()
 {
@@ -254,10 +265,13 @@ bool aml_convert_to_dv_by_vs_engine(StreamHdrType hdrType)
   bool dv_user_enabled(!settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_DV_DISABLE));
   bool user_convert_to_dv;
 
+  // a tone mapping choice wins; it can be set while Dolby Vision is disabled
   if (hdrType == StreamHdrType::HDR_TYPE_NONE)
-    user_convert_to_dv = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV);
+    user_convert_to_dv = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2DV) &&
+                         !settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_SDR2HDR);
   else
-    user_convert_to_dv = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV);
+    user_convert_to_dv = settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2DV) &&
+                         !settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_HDR2SDR);
 
   bool convert_to_dv = (!!aml_support_dolby_vision() &&
                         static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())
@@ -277,7 +291,11 @@ int aml_amdv_wait(StreamHdrType hdrType)
   if (hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
     CSysfsPath amdv_wait_delay{"/sys/module/aml_media/parameters/amdv_wait_delay"};
-    return amdv_wait_delay.Get<int>().value();
+    // The read cannot report a missing node, so ask first. CRenderManager reads
+    // this as a delay and counts a large one down a call at a time.
+    if (!amdv_wait_delay.Exists())
+      return 0;
+    return amdv_wait_delay.Get<int>().value_or(0);
   }
   else
     return 0;
@@ -295,4 +313,157 @@ void aml_set_3d_video_mode(unsigned int mode, bool framepacking_support, int vie
     CSysfsPath("/sys/module/aml_media/parameters/g_framepacking_support", framepacking_support ? 1 : 0);
     CSysfsPath("/sys/module/amvdec_h264mvc/parameters/view_mode", view_mode);
   }
+}
+
+std::optional<double> aml_since_frame_start_us(double maxAgeUs)
+{
+  const auto reading = aml_vblank_seq_and_age(maxAgeUs);
+  if (!reading)
+    return std::nullopt;
+
+  return reading->second;
+}
+
+double aml_monotonic_us()
+{
+  // The base DRM reports on, so an age read against it can be carried forward.
+  // CurrentHostCounter() is CLOCK_MONOTONIC_RAW and runs 180ms apart here.
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    return 0.0;
+
+  return static_cast<double>(now.tv_sec) * 1000000.0 +
+         static_cast<double>(now.tv_nsec) / 1000.0;
+}
+
+std::optional<std::pair<uint64_t, double>> aml_vblank_seq_and_age(double maxAgeUs)
+{
+  const auto* winSystem = static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem());
+  if (!winSystem)
+    return std::nullopt;
+
+  const CAMLDisplay* display = winSystem->GetAmlDisplay();
+  if (!display)
+    return std::nullopt;
+
+  const int fd = display->aml_get_Device_handle();
+  const uint32_t crtcId = display->aml_get_Crtc_id();
+  if (fd < 0 || crtcId == 0)
+    return std::nullopt;
+
+  uint64_t sequence = 0;
+  uint64_t vblankNs = 0;
+  if (drmCrtcGetSequence(fd, crtcId, &sequence, &vblankNs) != 0 || vblankNs == 0)
+    return std::nullopt;
+
+  // DRM reports on CLOCK_MONOTONIC, so read the clock DRM used.
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    return std::nullopt;
+
+  const int64_t nowNs =
+      static_cast<int64_t>(now.tv_sec) * 1000000000 + static_cast<int64_t>(now.tv_nsec);
+
+  const double age = static_cast<double>(nowNs - static_cast<int64_t>(vblankNs)) / 1000.0;
+  if (age < -maxAgeUs || age > maxAgeUs)
+    return std::nullopt;
+
+  return std::make_pair(sequence, age);
+}
+
+std::optional<uint32_t> aml_displayed_pts_ticks()
+{
+  CSysfsPath path("/sys/class/tsync/pts_video");
+  if (!path.Exists())
+    return std::nullopt;
+
+  const std::string raw = path.Get<std::string>().value_or("");
+  const char* p = raw.c_str();
+  int base = 10;
+  if (raw.size() > 2 && raw[0] == '0' && (raw[1] == 'x' || raw[1] == 'X'))
+  {
+    p += 2;
+    base = 16;
+  }
+
+  uint32_t ticks = 0;
+  const auto res = std::from_chars(p, p + std::strlen(p), ticks, base);
+  if (res.ec != std::errc())
+    return std::nullopt;
+  if (ticks == 0)
+    return std::nullopt;
+
+  return ticks;
+}
+
+double aml_render_display_latency(StreamHdrType hdrType, float audioDelay)
+{
+  const auto winSystem = CServiceBroker::GetWinSystem();
+  CGraphicContext& gfx = winSystem->GetGfxContext();
+
+  const bool isHDRUsed =
+      winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON && hdrType != StreamHdrType::HDR_TYPE_NONE;
+  float refresh = gfx.GetFPS();
+  if (gfx.GetVideoResolution() == RES_WINDOW)
+    refresh = 0;
+
+  const double latencyTweak = static_cast<double>(
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
+          refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
+
+  // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so the
+  // aim and the renderer's scheduling do not differ by the truncation.
+  const double videoDelay = static_cast<double>(static_cast<int>(audioDelay * 1000.0f));
+
+  // Without GetFrameLatencyAdjustment(). Callers that want the vblank term
+  // subtract it themselves, and CAMLGenlock does, so including it here would
+  // take it off twice and move the aim by the frame loop's wake jitter.
+  return DVD_MSEC_TO_TIME(latencyTweak + static_cast<double>(gfx.GetDisplayLatency()) -
+                          videoDelay);
+}
+
+//! How much of the renderer's display latency was chosen rather than measured,
+//! expressed the way it lands in the audio-versus-picture sum.
+//!
+//! CRenderManager builds m_displayLatency from four terms, and two of them are
+//! somebody's decision rather than a property of the pipeline: the latency tweak
+//! from advancedsettings, which says the display adds time that the picture
+//! should be moved early to cover, and the audio offset, which asks for the two
+//! to be deliberately apart. Both move which frame is on screen at a given clock
+//! time, so both arrive in the alignment term looking exactly like error.
+//!
+//! Returned with the tweak's sign flipped against the offset's, because that is
+//! how they enter: the sum carries +tweak and -offset, so their effect on
+//! alignment is the other way round. A reader that subtracts this is left with
+//! the part nobody asked for, which is the only part worth correcting.
+double aml_render_chosen_offset(StreamHdrType hdrType, float audioDelay)
+{
+  const auto winSystem = CServiceBroker::GetWinSystem();
+  CGraphicContext& gfx = winSystem->GetGfxContext();
+
+  const bool isHDRUsed =
+      winSystem->GetOSHDRStatus() == HDR_STATUS::HDR_ON && hdrType != StreamHdrType::HDR_TYPE_NONE;
+  float refresh = gfx.GetFPS();
+  if (gfx.GetVideoResolution() == RES_WINDOW)
+    refresh = 0;
+
+  const double latencyTweak = static_cast<double>(
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
+          refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
+
+  // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so this
+  // and the renderer's own sum cannot differ by the truncation.
+  const double videoDelay = static_cast<double>(static_cast<int>(audioDelay * 1000.0f));
+
+  return DVD_MSEC_TO_TIME(videoDelay - latencyTweak);
+}
+
+double aml_refreshes_per_frame(double displayRate, double fps)
+{
+  // Zero when the content outruns the display, which shows some frames and
+  // drops others rather than repeating each of them.
+  if (displayRate <= 0.0 || fps <= 0.0 || fps > displayRate)
+    return 0.0;
+
+  return displayRate / fps;
 }

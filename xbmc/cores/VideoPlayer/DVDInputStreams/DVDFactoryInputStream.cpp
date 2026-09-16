@@ -179,8 +179,11 @@ std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVide
   }
 
   // our file interface handles all these types of streams
-  return std::make_shared<CDVDInputStreamFile>(finalFileitem,
-                                               XFILE::READ_TRUNCATED | XFILE::READ_BITRATE);
+  auto stream = std::make_shared<CDVDInputStreamFile>(finalFileitem,
+                                                      XFILE::READ_TRUNCATED | XFILE::READ_BITRATE);
+  // Only playback has a user to stop it, so only its reads wait out a stalled source.
+  stream->SetWaitsForUser(pPlayer != nullptr);
+  return stream;
 }
 
 std::shared_ptr<CDVDInputStream> CDVDFactoryInputStream::CreateInputStream(IVideoPlayer* pPlayer, const CFileItem &fileitem, const std::vector<std::string>& filenames)

@@ -16,6 +16,7 @@
 #include "DVDClock.h"
 #include "DVDStreamInfo.h"
 #include "AMLCodec.h"
+#include "AMLHdr10PlusHook.h"
 #include "ServiceBroker.h"
 #include "utils/AMLUtils.h"
 #include "utils/HDRCapabilities.h"
@@ -119,6 +120,7 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   m_nalLengthSize = 0;
   m_streamMeta = {};
   m_stripHdr10Plus = false;
+  m_h10p = {};
   m_metadataSequencer.Reset();
 
   CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::Opening: codec {:d} profile:{:d} extra_size:{:d}", m_hints.codec, hints.profile, hints.extradata.GetSize());
@@ -407,6 +409,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   m_videobuffer.color_transfer = m_hints.colorTransferCharacteristic;
 
   m_processInfo.SetVideoDecoderName(m_pFormatName, true);
+  // libamcodec keeps its own stream buffer.
+  m_processInfo.SetVideoCodecBuffersData(true);
   m_processInfo.SetVideoDimensions(m_hints.width, m_hints.height);
   m_processInfo.SetVideoDeintMethod("hardware");
   m_processInfo.SetVideoDAR(m_hints.aspect);
@@ -429,6 +433,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
       if (m_hints.dovi.dv_profile > 0)
         m_streamMeta.flags.push_back("rpu-removed");
     }
+
+    m_h10p.Arm(m_hints, m_bitstream, caps, m_stripHdr10Plus);
   }
 
   if (m_hints.contentLightMetadata)
@@ -477,6 +483,7 @@ void CDVDVideoCodecAmlogic::Close(void)
     m_Codec->CloseDecoder(), m_Codec = nullptr;
 
   m_videobuffer.iFlags = 0;
+  m_dropRequested = false;
 
   if (m_mpeg2_sequence)
     delete m_mpeg2_sequence, m_mpeg2_sequence = NULL;
@@ -494,6 +501,11 @@ void CDVDVideoCodecAmlogic::Close(void)
 
 bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 {
+  // Enhancement-layer packets are sent with drop false, so taking the flag as it
+  // stands would clear the request halfway through a dual layer run.
+  if (!packet.isELPackage)
+    m_dropRequested = (m_codecControlFlags & DVD_CODEC_CTRL_DROP) != 0;
+
   // Handle Input, add demuxer packet to input queue, we must accept it or
   // it will be discarded as VideoPlayerVideo has no concept of "try again".
 
@@ -608,11 +620,14 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       if (!m_bitstream->CanStartDecode())
       {
         CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: waiting for keyframe (bitstream)", __FUNCTION__);
+        m_h10p.RollbackAu();
         m_pendingMeta = m_streamMeta;
         return true;
       }
       pData = m_bitstream->GetConvertBuffer();
       iSize = m_bitstream->GetConvertSize();
+
+      m_h10p.RewriteAu(pData, iSize);
       doviIsFEL = m_bitstream->GetDoviIsFEL();
       IsHdr10Plus = m_bitstream->GetIsHdrPlus();
       if (IsHdr10Plus && m_stripHdr10Plus &&
@@ -641,12 +656,18 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
       if (packet.pts == DVD_NOPTS_VALUE)
         m_hints.ptsinvalid = true;
 
+      m_h10p.OnDecoderOpen(m_hints, m_videobuffer.hdrType, IsHdr10Plus, m_bitstream, m_stripHdr10Plus);
+
       m_processInfo.SetDoviIsFEL(doviIsFEL);
       m_processInfo.SetIsHdr10Plus(IsHdr10Plus);
 
       CLog::Log(LOGINFO, "CDVDVideoCodecAmlogic::{}: Open decoder: fps:{:d}/{:d}", __FUNCTION__, m_hints.fpsrate, m_hints.fpsscale);
       if (m_Codec && !m_Codec->OpenDecoder(m_hints, doviIsFEL))
+      {
         CLog::Log(LOGERROR, "CDVDVideoCodecAmlogic::{}: Failed to open Amlogic Codec", __FUNCTION__);
+        m_Codec->CloseDecoder();
+        m_Codec = nullptr;
+      }
 
       m_videoBufferPool = std::shared_ptr<CAMLVideoBufferPool>(new CAMLVideoBufferPool());
 
@@ -654,7 +675,11 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     }
   }
 
-  if (packet.pSideData && packet.iSideDataElems > 0)
+  if (!m_Codec)
+    return true;
+
+  const bool converting = m_h10p.ConvertedThisAu();
+  if (packet.pSideData && packet.iSideDataElems > 0 && !converting)
   {
     const AVPacketSideData* sideData = av_packet_side_data_get(static_cast<AVPacketSideData*>(packet.pSideData),
                                                                packet.iSideDataElems,
@@ -705,6 +730,9 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
     m_packages.pop_front();
   }
 
+  if (!data_added && pData)
+    m_h10p.RollbackAu();
+
   return data_added;
 }
 
@@ -724,8 +752,10 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
   const double latencyTweak = static_cast<double>(
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->GetLatencyTweak(
           refresh, isHDRUsed, gfx.GetResInfo().iScreenHeight));
-  const double videoDelay =
-      static_cast<double>(m_processInfo.GetVideoSettings().m_AudioDelay) * 1000.0;
+  // Whole milliseconds, the way CRenderManager::SetDelay() receives it, so this
+  // and the renderer's own sum cannot differ by the truncation.
+  const double videoDelay = static_cast<double>(
+      static_cast<int>(m_processInfo.GetVideoSettings().m_AudioDelay * 1000.0f));
 
   return DVD_MSEC_TO_TIME(latencyTweak + static_cast<double>(gfx.GetDisplayLatency()) -
                           videoDelay -
@@ -758,7 +788,10 @@ void CDVDVideoCodecAmlogic::DrainMetadataToClock()
 
 void CDVDVideoCodecAmlogic::Reset(void)
 {
-  m_Codec->Reset();
+  if (m_Codec)
+    m_Codec->Reset();
+
+  m_h10p.OnFlush();
 
   while (!m_packages.empty())
   {
@@ -770,6 +803,7 @@ void CDVDVideoCodecAmlogic::Reset(void)
 
   m_mpeg2_sequence_pts = 0;
   m_has_keyframe = false;
+  m_dropRequested = false;
   m_metadataSequencer.Reset();
   m_pendingMeta = m_streamMeta;
   if (m_bitstream)
@@ -804,6 +838,9 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecAmlogic::GetPicture(VideoPicture* pVideoP
       pVideoPicture->videoBuffer->Release();
     pVideoPicture->videoBuffer = nullptr;
     pVideoPicture->SetParams(m_videobuffer);
+
+    if (m_dropRequested)
+      pVideoPicture->iFlags |= DVP_FLAG_DROPPED;
 
     pVideoPicture->videoBuffer = m_videoBufferPool->Get();
     static_cast<CAMLVideoBuffer*>(pVideoPicture->videoBuffer)->Set(this, m_Codec,
@@ -840,10 +877,8 @@ void CDVDVideoCodecAmlogic::SetCodecControl(int flags)
     CLog::Log(LOGDEBUG, LOGVIDEO, "{} {:x}->{:x}",  __func__, m_codecControlFlags, flags);
     m_codecControlFlags = flags;
 
-    if (flags & DVD_CODEC_CTRL_DROP)
-      m_videobuffer.iFlags |= DVP_FLAG_DROPPED;
-    else
-      m_videobuffer.iFlags &= ~DVP_FLAG_DROPPED;
+    if (flags & DVD_CODEC_CTRL_DRAIN)
+      m_dropRequested = false;
 
     if (m_Codec)
       m_Codec->SetDrain((flags & DVD_CODEC_CTRL_DRAIN) != 0);

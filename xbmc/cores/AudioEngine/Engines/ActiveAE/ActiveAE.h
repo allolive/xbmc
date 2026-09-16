@@ -223,6 +223,10 @@ protected:
     double m_bufferedTime;
     double m_resampleRatio;
     double m_syncError;
+    double m_syncErrorRaw{0.0};
+    bool m_syncErrorRawValid{false};
+    double m_syncErrorScale{1.0};
+    bool m_syncErrorSaturated{false};
     unsigned int m_errorTime;
     CAESyncInfo::AESyncState m_syncState;
   };

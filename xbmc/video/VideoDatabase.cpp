@@ -73,6 +73,7 @@
 #include <memory>
 #include <ranges>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -4633,6 +4634,89 @@ CVideoInfoTag CVideoDatabase::GetDetailsByTypeAndId(VideoDbContentType type, int
   return {};
 }
 
+bool CVideoDatabase::AddStreamDetailRow(Dataset& ds, CStreamDetails& details)
+{
+  const auto e = static_cast<CStreamDetail::StreamType>(ds.fv(1).get_asInt());
+  switch (e)
+  {
+    case CStreamDetail::VIDEO:
+    {
+      auto* p = new CStreamDetailVideo();
+      p->m_strCodec = ds.fv(2).get_asString();
+      p->m_fAspect = ds.fv(3).get_asFloat();
+      p->m_iWidth = ds.fv(4).get_asInt();
+      p->m_iHeight = ds.fv(5).get_asInt();
+      p->m_iDuration = ds.fv(10).get_asInt();
+      p->m_strStereoMode = ds.fv(11).get_asString();
+      p->m_strLanguage = ds.fv(12).get_asString();
+      p->m_strHdrType = ds.fv(13).get_asString();
+      p->m_strHdrDetail = ds.fv(14).get_asString();
+      p->m_source = static_cast<CStreamDetail::Source>(ds.fv(15).get_asInt());
+      p->m_version = ds.fv(16).get_asInt();
+      details.AddStream(p);
+      return true;
+    }
+    case CStreamDetail::AUDIO:
+    {
+      auto* p = new CStreamDetailAudio();
+      p->m_strCodec = ds.fv(6).get_asString();
+      if (ds.fv(7).get_isNull())
+        p->m_iChannels = -1;
+      else
+        p->m_iChannels = ds.fv(7).get_asInt();
+      p->m_strLanguage = ds.fv(8).get_asString();
+      p->m_source = static_cast<CStreamDetail::Source>(ds.fv(15).get_asInt());
+      p->m_version = ds.fv(16).get_asInt();
+      if (!ds.fv(17).get_isNull())
+        p->m_flags = static_cast<StreamFlags>(ds.fv(17).get_asInt());
+      details.AddStream(p);
+      return true;
+    }
+    case CStreamDetail::SUBTITLE:
+    {
+      auto* p = new CStreamDetailSubtitle();
+      p->m_strLanguage = ds.fv(9).get_asString();
+      p->m_source = static_cast<CStreamDetail::Source>(ds.fv(15).get_asInt());
+      p->m_version = ds.fv(16).get_asInt();
+      if (!ds.fv(17).get_isNull())
+        p->m_flags = static_cast<StreamFlags>(ds.fv(17).get_asInt());
+      details.AddStream(p);
+      return true;
+    }
+  }
+  return false;
+}
+
+namespace
+{
+constexpr size_t MAX_IDS_PER_QUERY = 500;
+
+// Calls fn(ids, idList) for consecutive slices of at most MAX_IDS_PER_QUERY ids, where idList is
+// the slice joined with commas. Stops early, returning false, when abort or fn returns false.
+template<typename Fn>
+bool ForEachIdChunk(const std::vector<int>& ids, const std::function<bool()>& abort, Fn&& fn)
+{
+  for (size_t begin = 0; begin < ids.size(); begin += MAX_IDS_PER_QUERY)
+  {
+    if (abort && abort())
+      return false;
+
+    const auto chunk =
+        std::span(ids).subspan(begin, std::min(MAX_IDS_PER_QUERY, ids.size() - begin));
+    std::string idList;
+    for (const int id : chunk)
+    {
+      if (!idList.empty())
+        idList += ',';
+      idList += std::to_string(id);
+    }
+    if (!fn(chunk, idList))
+      return false;
+  }
+  return true;
+}
+} // namespace
+
 bool CVideoDatabase::GetStreamDetails(const std::string& filenameAndPath, CStreamDetails& details)
 {
   CVideoInfoTag tag;
@@ -4684,57 +4768,8 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
 
     while (!pDS->eof())
     {
-      const auto e = static_cast<CStreamDetail::StreamType>(pDS->fv(1).get_asInt());
-      switch (e)
-      {
-      case CStreamDetail::VIDEO:
-        {
-          auto* p = new CStreamDetailVideo();
-          p->m_strCodec = pDS->fv(2).get_asString();
-          p->m_fAspect = pDS->fv(3).get_asFloat();
-          p->m_iWidth = pDS->fv(4).get_asInt();
-          p->m_iHeight = pDS->fv(5).get_asInt();
-          p->m_iDuration = pDS->fv(10).get_asInt();
-          p->m_strStereoMode = pDS->fv(11).get_asString();
-          p->m_strLanguage = pDS->fv(12).get_asString();
-          p->m_strHdrType = pDS->fv(13).get_asString();
-          p->m_strHdrDetail = pDS->fv(14).get_asString();
-          p->m_source = static_cast<CStreamDetail::Source>(pDS->fv(15).get_asInt());
-          p->m_version = pDS->fv(16).get_asInt();
-          details.AddStream(p);
-          retVal = true;
-          break;
-        }
-      case CStreamDetail::AUDIO:
-        {
-          auto* p = new CStreamDetailAudio();
-          p->m_strCodec = pDS->fv(6).get_asString();
-          if (pDS->fv(7).get_isNull())
-            p->m_iChannels = -1;
-          else
-            p->m_iChannels = pDS->fv(7).get_asInt();
-          p->m_strLanguage = pDS->fv(8).get_asString();
-          p->m_source = static_cast<CStreamDetail::Source>(pDS->fv(15).get_asInt());
-          p->m_version = pDS->fv(16).get_asInt();
-          if (!pDS->fv(17).get_isNull())
-            p->m_flags = static_cast<StreamFlags>(pDS->fv(17).get_asInt());
-          details.AddStream(p);
-          retVal = true;
-          break;
-        }
-      case CStreamDetail::SUBTITLE:
-        {
-          auto* p = new CStreamDetailSubtitle();
-          p->m_strLanguage = pDS->fv(9).get_asString();
-          p->m_source = static_cast<CStreamDetail::Source>(pDS->fv(15).get_asInt());
-          p->m_version = pDS->fv(16).get_asInt();
-          if (!pDS->fv(17).get_isNull())
-            p->m_flags = static_cast<StreamFlags>(pDS->fv(17).get_asInt());
-          details.AddStream(p);
-          retVal = true;
-          break;
-        }
-      }
+      if (AddStreamDetailRow(*pDS, details))
+        retVal = true;
 
       pDS->next();
     }
@@ -4751,6 +4786,56 @@ bool CVideoDatabase::GetStreamDetails(CVideoInfoTag& tag)
     tag.SetDuration(details.GetVideoDuration());
 
   return retVal;
+}
+
+bool CVideoDatabase::GetStreamDetailsForFiles(const std::vector<int>& fileIds,
+                                              std::unordered_map<int, CStreamDetails>& details,
+                                              const std::function<bool()>& abort /* = {} */)
+{
+  if (fileIds.empty())
+    return true;
+  if (nullptr == m_pDB)
+    return false;
+
+  std::unique_ptr<Dataset> pDS(m_pDB->CreateDataset());
+  if (!pDS)
+    return false;
+
+  const auto readChunk = [&](std::span<const int> ids, const std::string& idList)
+  {
+    std::unordered_map<int, CStreamDetails> found;
+    try
+    {
+      const std::string sql =
+          PrepareSQL("SELECT * FROM streamdetails WHERE idFile IN (%s)", idList.c_str());
+      pDS->query(sql);
+      while (!pDS->eof())
+      {
+        AddStreamDetailRow(*pDS, found[pDS->fv(0).get_asInt()]);
+        pDS->next();
+      }
+      pDS->close();
+    }
+    catch (...)
+    {
+      CLog::LogF(LOGERROR, "({} ids) failed", ids.size());
+      return false;
+    }
+
+    for (const int id : ids)
+    {
+      if (details.contains(id))
+        continue;
+      // Hand the entry over as a node, so it is neither copied nor moved
+      auto node = found.extract(id);
+      const auto it =
+          node ? details.insert(std::move(node)).position : details.try_emplace(id).first;
+      it->second.DetermineBestStreams();
+    }
+    return true;
+  };
+
+  return ForEachIdChunk(fileIds, abort, readChunk);
 }
 
 bool CVideoDatabase::GetResumePoint(CVideoInfoTag& tag)
@@ -5268,6 +5353,41 @@ void CVideoDatabase::GetUniqueIDs(int media_id, const std::string &media_type, C
   }
 }
 
+namespace
+{
+void ReadVideoSettingsRow(Dataset& ds, CVideoSettings& settings)
+{
+  settings.m_AudioDelay = ds.fv("AudioDelay").get_asFloat();
+  settings.m_AudioStream = ds.fv("AudioStream").get_asInt();
+  settings.m_Brightness = ds.fv("Brightness").get_asFloat();
+  settings.m_Contrast = ds.fv("Contrast").get_asFloat();
+  settings.m_CustomPixelRatio = ds.fv("PixelRatio").get_asFloat();
+  settings.m_CustomNonLinStretch = ds.fv("NonLinStretch").get_asBool();
+  settings.m_NoiseReduction = ds.fv("NoiseReduction").get_asFloat();
+  settings.m_PostProcess = ds.fv("PostProcess").get_asBool();
+  settings.m_Sharpness = ds.fv("Sharpness").get_asFloat();
+  settings.m_CustomZoomAmount = ds.fv("ZoomAmount").get_asFloat();
+  settings.m_CustomVerticalShift = ds.fv("VerticalShift").get_asFloat();
+  settings.m_Gamma = ds.fv("Gamma").get_asFloat();
+  settings.m_SubtitleDelay = ds.fv("SubtitleDelay").get_asFloat();
+  settings.m_SubtitleOn = ds.fv("SubtitlesOn").get_asBool();
+  settings.m_SubtitleStream = ds.fv("SubtitleStream").get_asInt();
+  settings.m_ViewMode = ds.fv("ViewMode").get_asInt();
+  settings.m_ResumeTime = ds.fv("ResumeTime").get_asInt();
+  settings.m_InterlaceMethod = (EINTERLACEMETHOD)ds.fv("Deinterlace").get_asInt();
+  settings.m_VolumeAmplification = ds.fv("VolumeAmplification").get_asFloat();
+  settings.m_ScalingMethod = (ESCALINGMETHOD)ds.fv("ScalingMethod").get_asInt();
+  settings.m_StereoMode = ds.fv("StereoMode").get_asInt();
+  settings.m_StereoInvert = ds.fv("StereoInvert").get_asBool();
+  settings.m_VideoStream = ds.fv("VideoStream").get_asInt();
+  settings.m_ToneMapMethod = static_cast<ETONEMAPMETHOD>(ds.fv("TonemapMethod").get_asInt());
+  settings.m_ToneMapParam = ds.fv("TonemapParam").get_asFloat();
+  settings.m_Orientation = ds.fv("Orientation").get_asInt();
+  settings.m_CenterMixLevel = ds.fv("CenterMixLevel").get_asInt();
+  settings.m_isDefaultVideoSettings = false;
+}
+} // namespace
+
 bool CVideoDatabase::GetVideoSettings(const CFileItem &item, CVideoSettings &settings)
 {
   return GetVideoSettings(GetFileId(item), settings);
@@ -5295,36 +5415,8 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
 
     if (m_pDS->num_rows() > 0)
     { // get the video settings info
-      settings.m_AudioDelay = m_pDS->fv("AudioDelay").get_asFloat();
-      settings.m_AudioStream = m_pDS->fv("AudioStream").get_asInt();
-      settings.m_Brightness = m_pDS->fv("Brightness").get_asFloat();
-      settings.m_Contrast = m_pDS->fv("Contrast").get_asFloat();
-      settings.m_CustomPixelRatio = m_pDS->fv("PixelRatio").get_asFloat();
-      settings.m_CustomNonLinStretch = m_pDS->fv("NonLinStretch").get_asBool();
-      settings.m_NoiseReduction = m_pDS->fv("NoiseReduction").get_asFloat();
-      settings.m_PostProcess = m_pDS->fv("PostProcess").get_asBool();
-      settings.m_Sharpness = m_pDS->fv("Sharpness").get_asFloat();
-      settings.m_CustomZoomAmount = m_pDS->fv("ZoomAmount").get_asFloat();
-      settings.m_CustomVerticalShift = m_pDS->fv("VerticalShift").get_asFloat();
-      settings.m_Gamma = m_pDS->fv("Gamma").get_asFloat();
-      settings.m_SubtitleDelay = m_pDS->fv("SubtitleDelay").get_asFloat();
-      settings.m_SubtitleOn = m_pDS->fv("SubtitlesOn").get_asBool();
-      settings.m_SubtitleStream = m_pDS->fv("SubtitleStream").get_asInt();
-      settings.m_ViewMode = m_pDS->fv("ViewMode").get_asInt();
-      settings.m_ResumeTime = m_pDS->fv("ResumeTime").get_asInt();
-      settings.m_InterlaceMethod = (EINTERLACEMETHOD)m_pDS->fv("Deinterlace").get_asInt();
-      settings.m_VolumeAmplification = m_pDS->fv("VolumeAmplification").get_asFloat();
-      settings.m_ScalingMethod = (ESCALINGMETHOD)m_pDS->fv("ScalingMethod").get_asInt();
-      settings.m_StereoMode = m_pDS->fv("StereoMode").get_asInt();
-      settings.m_StereoInvert = m_pDS->fv("StereoInvert").get_asBool();
-      settings.m_VideoStream = m_pDS->fv("VideoStream").get_asInt();
-      settings.m_ToneMapMethod =
-          static_cast<ETONEMAPMETHOD>(m_pDS->fv("TonemapMethod").get_asInt());
-      settings.m_ToneMapParam = m_pDS->fv("TonemapParam").get_asFloat();
-      settings.m_Orientation = m_pDS->fv("Orientation").get_asInt();
-      settings.m_CenterMixLevel = m_pDS->fv("CenterMixLevel").get_asInt();
+      ReadVideoSettingsRow(*m_pDS, settings);
       m_pDS->close();
-      settings.m_isDefaultVideoSettings = false;
       return true;
     }
     m_pDS->close();
@@ -5334,6 +5426,52 @@ bool CVideoDatabase::GetVideoSettings(int idFile, CVideoSettings &settings)
     CLog::LogF(LOGERROR, "failed");
   }
   return false;
+}
+
+bool CVideoDatabase::GetVideoSettingsForFiles(
+    const std::vector<int>& fileIds,
+    std::unordered_map<int, std::optional<CVideoSettings>>& settings,
+    const std::function<bool()>& abort /* = {} */)
+{
+  if (fileIds.empty())
+    return true;
+  if (nullptr == m_pDB)
+    return false;
+
+  std::unique_ptr<Dataset> pDS(m_pDB->CreateDataset());
+  if (!pDS)
+    return false;
+
+  const auto readChunk = [&](std::span<const int> ids, const std::string& idList)
+  {
+    std::unordered_map<int, CVideoSettings> found;
+    try
+    {
+      pDS->query(PrepareSQL("SELECT * FROM settings WHERE idFile IN (%s)", idList.c_str()));
+      while (!pDS->eof())
+      {
+        const auto [it, inserted] = found.try_emplace(pDS->fv("idFile").get_asInt());
+        if (inserted)
+          ReadVideoSettingsRow(*pDS, it->second);
+        pDS->next();
+      }
+      pDS->close();
+    }
+    catch (...)
+    {
+      CLog::LogF(LOGERROR, "({} ids) failed", ids.size());
+      return false;
+    }
+
+    for (const int id : ids)
+    {
+      auto node = found.extract(id);
+      settings.try_emplace(id, node ? std::optional(std::move(node.mapped())) : std::nullopt);
+    }
+    return true;
+  };
+
+  return ForEachIdChunk(fileIds, abort, readChunk);
 }
 
 void CVideoDatabase::SetVideoSettings(const CFileItem &item, const CVideoSettings &settings)
@@ -5510,6 +5648,54 @@ bool CVideoDatabase::GetArtForItem(int mediaId, const MediaType& mediaType, KODI
     CLog::LogF(LOGERROR, "({}) failed", mediaId);
   }
   return false;
+}
+
+bool CVideoDatabase::GetArtForItems(const std::vector<int>& mediaIds,
+                                    const MediaType& mediaType,
+                                    std::unordered_map<int, KODI::ART::Artwork>& art,
+                                    const std::function<bool()>& abort /* = {} */)
+{
+  if (mediaIds.empty())
+    return true;
+  if (nullptr == m_pDB)
+    return false;
+
+  std::unique_ptr<Dataset> pDS(m_pDB->CreateDataset());
+  if (!pDS)
+    return false;
+
+  return ForEachIdChunk(
+      mediaIds, abort,
+      [&](std::span<const int> ids, const std::string& idList)
+      {
+        std::unordered_map<int, KODI::ART::Artwork> found;
+        try
+        {
+          const std::string sql = PrepareSQL(
+              "SELECT media_id,type,url FROM art WHERE media_id IN (%s) AND media_type='%s'",
+              idList.c_str(), mediaType.c_str());
+          pDS->query(sql);
+          while (!pDS->eof())
+          {
+            found[pDS->fv(0).get_asInt()].try_emplace(pDS->fv(1).get_asString(),
+                                                      pDS->fv(2).get_asString());
+            pDS->next();
+          }
+          pDS->close();
+        }
+        catch (...)
+        {
+          CLog::LogF(LOGERROR, "({} ids, {}) failed", ids.size(), mediaType);
+          return false;
+        }
+
+        for (const int id : ids)
+        {
+          auto node = found.extract(id);
+          art.try_emplace(id, node ? std::move(node.mapped()) : KODI::ART::Artwork{});
+        }
+        return true;
+      });
 }
 
 bool CVideoDatabase::GetArtForAsset(int assetId,

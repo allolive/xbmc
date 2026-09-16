@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "AMLGenlock.h"
 #include "DVDVideoCodec.h"
 #include "cores/VideoPlayer/DVDStreamInfo.h"
 #include "cores/IPlayer.h"
@@ -17,6 +18,7 @@
 #include "utils/Geometry.h"
 
 #include <deque>
+#include <mutex>
 #include <atomic>
 
 typedef struct am_private_t am_private_t;
@@ -83,6 +85,8 @@ public:
   static int    OMXDurationToNs(int duration);
   int           GetAmlDuration() const;
   int           ReleaseFrame(const uint32_t index, bool bDrop = false);
+  void          LatencyTick(uint64_t omxPts);
+  void          GenlockTick(uint64_t omxPts);
 
   static int    PollFrame();
   static void   SetPollDevice(int device);
@@ -103,10 +107,18 @@ private:
 
   DllLibAmCodec   *m_dll;
   bool             m_opened;
+  //! Whether the audio was a bitstream last frame, so the trim is given back
+  //! once on the way out rather than on every frame after it.
+  bool             m_trimWasPassthrough{false};
+  double           m_lastAudioOffset{0.0};
+  bool             m_offsetStoodDown{false};
+  //! Whether this took the system default vfm chain away, so the close puts back
+  //! only what it actually took.
+  bool             m_vfmMapOverridden{false};
   bool             m_drain = false;
   am_private_t    *am_private;
   CDVDStreamInfo   m_hints;
-  int              m_speed;
+  std::atomic<int> m_speed;
   uint64_t         m_cur_pts;
   uint64_t         m_last_pts;
   uint32_t         m_bufferIndex;
@@ -129,12 +141,15 @@ private:
   unsigned int m_state;
 
   PosixFilePtr     m_amlVideoFile;
+  //! Per instance, not file scope: the member it guards is per instance.
+  std::mutex       m_amlVideoFileMutex;
   std::string      m_defaultVfmMap;
 
   static std::atomic_flag  m_pollSync;
   static int m_pollDevice;
   static double m_ttd;
   CProcessInfo &m_processInfo;
+  CAMLGenlock      m_genlock;
   int m_decoder_timeout;
   std::chrono::time_point<std::chrono::system_clock> m_tp_last_frame;
 

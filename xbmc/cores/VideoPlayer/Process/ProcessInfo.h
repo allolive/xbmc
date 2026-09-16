@@ -9,6 +9,7 @@
 #pragma once
 
 #include "cores/VideoPlayer/Buffers/VideoBuffer.h"
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderInfo.h"
 #include "cores/VideoSettings.h"
 #include "threads/CriticalSection.h"
@@ -36,6 +37,8 @@ public:
   void SetVideoDecoderName(const std::string &name, bool isHw);
   std::string GetVideoDecoderName();
   bool IsVideoHwDecoder();
+  void SetVideoCodecBuffersData(bool buffersData);
+  bool GetVideoCodecBuffersData() const;
   void SetVideoDeintMethod(const std::string &method);
   std::string GetVideoDeintMethod();
   void SetVideoPixelFormat(const std::string &pixFormat);
@@ -86,6 +89,21 @@ public:
   int GetAudioQueueLevel();
   void SetAudioQueueDataLevel(int level);
   int GetAudioQueueDataLevel();
+
+  //! \brief Where the audio leaving the sink sits against the master clock, in
+  //! DVD time units, positive when the audio is ahead of it, or DVD_NOPTS_VALUE
+  //! while nothing is measuring. Published by the audio player for anything that
+  //! wants to report the pipeline's alignment for the AML latency work.
+  void SetAudioSyncError(double error) { m_audioSyncError.store(error); }
+  double GetAudioSyncError() const { return m_audioSyncError.load(); }
+
+  //! \brief Whether the sink is carrying a bitstream rather than samples. The
+  //! trim below only reaches a bitstream: mpll0 clocks the framing one goes out
+  //! in, while samples take another path entirely. A reader deciding whether the
+  //! knob it has can reach this stream at all needs to know which.
+  void SetAudioPassthrough(bool passthrough) { m_audioPassthrough.store(passthrough); }
+  bool GetAudioPassthrough() const { return m_audioPassthrough.load(); }
+
   virtual bool AllowDTSHDDecode();
   virtual bool WantsRawPassthrough() { return false; }
 
@@ -149,6 +167,7 @@ protected:
 
   // player video info
   bool m_videoIsHWDecoder;
+  bool m_videoCodecBuffersData{false};
   std::string m_videoDecoderName;
   std::string m_videoDeintMethod;
   std::string m_videoPixelFormat;
@@ -177,6 +196,8 @@ protected:
   int m_audioLiveBitRate = 0;
   int m_audioQueueLevel = 0;
   int m_audioQueueDataLevel = 0;
+  std::atomic<double> m_audioSyncError{DVD_NOPTS_VALUE};
+  std::atomic<bool> m_audioPassthrough{false};
   CCriticalSection m_audioCodecSection;
 
   // player subtitle info

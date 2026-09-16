@@ -19,6 +19,7 @@
 #include <array>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -459,6 +460,19 @@ public:
    */
   bool GetVideoSettings(const std::string &filePath, CVideoSettings &settings);
 
+  /*!
+   * \brief Retrieve the video settings of many files with a few queries
+   * \param fileIds ids of the files, looked up in chunks
+   * \param settings receives one entry per id that was looked up, empty if the file has no stored
+   * settings. Ids of a chunk that failed or was not reached are left out, and entries already in
+   * the map are kept.
+   * \param abort optional, checked before each chunk; the lookup stops when it returns true
+   * \return true if every chunk was looked up, false if the lookup was stopped or failed
+   */
+  bool GetVideoSettingsForFiles(const std::vector<int>& fileIds,
+                                std::unordered_map<int, std::optional<CVideoSettings>>& settings,
+                                const std::function<bool()>& abort = {});
+
   /*! \brief Set video settings for the specified file path
    \param fileItem to set the settings for
    \sa GetVideoSettings
@@ -524,6 +538,19 @@ public:
   bool GetStreamDetails(CFileItem& item);
   bool GetStreamDetails(CVideoInfoTag& tag);
   bool GetStreamDetails(const std::string& filenameAndPath, CStreamDetails& details);
+
+  /*!
+   * \brief Retrieve the stream details of many files with a few queries
+   * \param fileIds ids of the files, looked up in chunks
+   * \param details receives one entry per id that was looked up, empty if the file has no stored
+   * stream details. Ids of a chunk that failed or was not reached are left out, and entries already
+   * in the map are kept.
+   * \param abort optional, checked before each chunk; the lookup stops when it returns true
+   * \return true if every chunk was looked up, false if the lookup was stopped or failed
+   */
+  bool GetStreamDetailsForFiles(const std::vector<int>& fileIds,
+                                std::unordered_map<int, CStreamDetails>& details,
+                                const std::function<bool()>& abort = {});
   bool GetDetailsByTypeAndId(CFileItem& item, VideoDbContentType type, int id);
   CVideoInfoTag GetDetailsByTypeAndId(VideoDbContentType type, int id);
 
@@ -863,6 +890,20 @@ public:
   bool SetArtForItem(int mediaId, const MediaType& mediaType, const KODI::ART::Artwork& art);
   bool GetArtForItem(int mediaId, const MediaType& mediaType, KODI::ART::Artwork& art);
   std::string GetArtForItem(int mediaId, const MediaType &mediaType, const std::string &artType);
+
+  /*!
+   * \brief Retrieve the art of many items of one media type with a few queries
+   * \param mediaIds ids of the items, looked up in chunks
+   * \param mediaType media type of the items
+   * \param art receives one entry per id that was looked up, empty if the item has no art. Ids of a
+   * chunk that failed or was not reached are left out, and entries already in the map are kept.
+   * \param abort optional, checked before each chunk; the lookup stops when it returns true
+   * \return true if every chunk was looked up, false if the lookup was stopped or failed
+   */
+  bool GetArtForItems(const std::vector<int>& mediaIds,
+                      const MediaType& mediaType,
+                      std::unordered_map<int, KODI::ART::Artwork>& art,
+                      const std::function<bool()>& abort = {});
 
   void UpdateArtForItem(int mediaId, const MediaType& mediaType) const;
 
@@ -1212,6 +1253,8 @@ protected:
   int SetFileForUnknown(const std::string& fileAndPath, int oldIdFile, int newIdFile);
 
 private:
+  static bool AddStreamDetailRow(dbiplus::Dataset& ds, CStreamDetails& details);
+
   void CreateTables() override;
   void CreateAnalytics() override;
   void UpdateTables(int version) override;

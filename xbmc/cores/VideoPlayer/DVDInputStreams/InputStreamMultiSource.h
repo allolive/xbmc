@@ -11,6 +11,7 @@
 #include "DVDInputStream.h"
 #include "InputStreamMultiStreams.h"
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -39,4 +40,5 @@ public:
 protected:
   IVideoPlayer* m_pPlayer;
   std::vector<std::string> m_filenames;
+  std::atomic<bool> m_aborted{false};
 };

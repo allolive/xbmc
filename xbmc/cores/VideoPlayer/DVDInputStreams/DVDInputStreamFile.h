@@ -10,6 +10,9 @@
 
 #include "DVDInputStream.h"
 
+#include <atomic>
+#include <cstdint>
+
 class CDVDInputStreamFile : public CDVDInputStream
 {
 public:
@@ -25,9 +28,16 @@ public:
   int GetBlockSize() override;
   void SetReadRate(uint32_t rate) override;
   bool GetCacheStatus(XFILE::SCacheStatus *status) override;
+  void Abort() override { m_aborted = true; }
+  bool Aborted() const { return m_aborted; }
+  void SetWaitsForUser(bool waits) { m_waitsForUser = waits; }
+  uint32_t GetStallCount() const { return m_stallCount; }
 
 protected:
   XFILE::CFile* m_pFile = nullptr;
   bool m_eof = false;
   unsigned int m_flags = 0;
+  std::atomic<bool> m_aborted{false};
+  bool m_waitsForUser = false;
+  std::atomic<uint32_t> m_stallCount{0};
 };

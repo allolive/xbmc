@@ -75,6 +75,7 @@ namespace XFILE
     int64_t m_forwardCacheSize = 0;
     int64_t m_maxForward = 0;
     bool m_bFilling = false;
+    bool m_readStalled = false;
     std::atomic<int64_t> m_fileSize;
     unsigned int m_flags;
     CCriticalSection m_sync;

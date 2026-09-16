@@ -44,6 +44,27 @@ public:
     SYNC_ADJUST
   };
   AESyncState state;
+
+  //! \brief \ref error before the engine scaled it. \ref error is what the
+  //! sync loop acts on; this is what the pipeline is actually doing, for
+  //! anything that reports rather than corrects. Appended rather than placed
+  //! beside \ref error so an out-of-tree aggregate initialiser cannot silently
+  //! shift into it.
+  double errorRaw{0.0};
+
+  //! \brief Whether \ref errorRaw came from a window that held any samples.
+  //! An empty window averages to zero and is stamped like any other.
+  bool errorRawValid{false};
+
+  //! \brief What the engine multiplied \ref error by. Stated rather than left to
+  //! be inferred from the pair: both are moved by corrections afterwards, so
+  //! their ratio stops being the scale almost immediately.
+  double errorScale{1.0};
+
+  //! \brief Whether the measurement hit the engine's own ceiling. A saturated
+  //! reading is a lower bound, not a measurement, and nothing should be
+  //! corrected by it.
+  bool errorSaturated{false};
 };
 
 /**

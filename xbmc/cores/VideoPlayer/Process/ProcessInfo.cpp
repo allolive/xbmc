@@ -61,10 +61,25 @@ void CProcessInfo::SetDataCache(CDataCacheCore *cache)
 //******************************************************************************
 // video codec
 //******************************************************************************
+void CProcessInfo::SetVideoCodecBuffersData(bool buffersData)
+{
+  std::unique_lock lock(m_videoCodecSection);
+
+  m_videoCodecBuffersData = buffersData;
+}
+
+bool CProcessInfo::GetVideoCodecBuffersData() const
+{
+  std::unique_lock lock(m_videoCodecSection);
+
+  return m_videoCodecBuffersData;
+}
+
 void CProcessInfo::ResetVideoCodecInfo()
 {
   std::unique_lock lock(m_videoCodecSection);
 
+  m_videoCodecBuffersData = false;
   m_videoIsHWDecoder = false;
   m_videoDecoderName = "unknown";
   m_videoDeintMethod = "unknown";
@@ -104,6 +119,8 @@ void CProcessInfo::SetVideoDecoderName(const std::string &name, bool isHw)
 {
   std::unique_lock lock(m_videoCodecSection);
 
+  // A codec that holds data of its own says so after naming itself.
+  m_videoCodecBuffersData = false;
   m_videoIsHWDecoder = isHw;
   m_videoDecoderName = name;
 
@@ -419,6 +436,14 @@ void CProcessInfo::ResetAudioCodecInfo()
   m_audioLiveBitRate = 0;
   m_audioQueueLevel = 0;
   m_audioQueueDataLevel = 0;
+  m_audioSyncError = DVD_NOPTS_VALUE;
+
+  // With the sync error, not left behind it. A reader that gates on this to
+  // decide whether it may act keeps acting on a figure that stopped being
+  // republished the moment the audio went away - the audio track switched off
+  // mid playback, or a stream whose audio ends before its video - and there is
+  // then no measurement left that could ever move it back.
+  m_audioPassthrough.store(false);
 
   if (m_dataCache)
   {

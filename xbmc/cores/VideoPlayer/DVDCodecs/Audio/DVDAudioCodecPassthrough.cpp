@@ -9,7 +9,11 @@
 #include "DVDAudioCodecPassthrough.h"
 
 #include "DVDCodecs/DVDCodecs.h"
+#include "ServiceBroker.h"
 #include "cores/AudioEngine/Utils/PackerMAT.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
+#include "utils/Variant.h"
 #include "utils/log.h"
 
 #include <algorithm>
@@ -48,6 +52,26 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
 {
   m_hints = hints;
   m_parser.SetCoreOnly(false);
+
+  bool defeatAC3 = false;
+  bool defeatTrueHD = false;
+  bool defeatDTS = false;
+  if (const auto settingsComponent = CServiceBroker::GetSettingsComponent())
+  {
+    if (const auto settings = settingsComponent->GetSettings())
+    {
+      for (const auto& format : settings->GetList(CSettings::SETTING_COREELEC_AUDIO_DIALNORMDEFEAT))
+      {
+        defeatAC3 |= format.asInteger() == 0;
+        defeatTrueHD |= format.asInteger() == 1;
+        defeatDTS |= format.asInteger() == 2;
+      }
+    }
+  }
+  // DD+ Atmos (JOC) is never touched; the parser also checks the bitstream
+  m_parser.SetDefeatAC3DialNorm(defeatAC3 && hints.profile != AV_PROFILE_EAC3_DDP_ATMOS);
+  m_parser.SetDefeatTrueHDDialNorm(defeatTrueHD);
+  m_parser.SetDefeatDTSDialNorm(defeatDTS);
   switch (m_format.m_streamInfo.m_type)
   {
     case CAEStreamInfo::STREAM_TYPE_AC3:

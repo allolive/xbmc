@@ -17,6 +17,7 @@
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <mutex>
 
 extern "C"
@@ -90,6 +91,17 @@ void CAudioSinkAE::Destroy(bool finish)
   m_bPassthrough = false;
   m_bPaused = true;
   m_playingPts = DVD_NOPTS_VALUE;
+
+  // The measurement belonged to the stream that just went away. Left standing,
+  // the first packet of the next one is answered with the last one's error.
+  m_syncError = 0.0;
+  m_syncErrorRaw = 0.0;
+  m_syncErrorRawValid = false;
+  m_syncErrorScale = 1.0;
+  m_syncErrorSaturated = false;
+  m_syncErrorAcquire = false;
+  m_syncWasInSync = false;
+  m_syncErrorTime = 0;
 }
 
 unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
@@ -102,13 +114,28 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
     return 0;
 
   CAESyncInfo info = m_pAudioStream->GetSyncInfo();
-  if (info.state == CAESyncInfo::SYNC_INSYNC)
+  const bool inSync = info.state == CAESyncInfo::SYNC_INSYNC;
+
+  // The engine has just finished resynchronising, so the next measurement it
+  // publishes is the first that describes where the resync actually left the
+  // stream rather than where the engine was aiming.
+  if (inSync && !m_syncWasInSync)
+    m_syncErrorAcquire = true;
+  m_syncWasInSync = inSync;
+
+  if (inSync)
   {
     unsigned int newTime = info.errortime;
     if (newTime != m_syncErrorTime)
     {
       m_syncErrorTime = info.errortime;
       m_syncError = info.error / 1000 * DVD_TIME_BASE;
+      m_syncErrorRaw = info.errorRaw / 1000 * DVD_TIME_BASE;
+      m_syncErrorRawValid = info.errorRawValid;
+
+      m_syncErrorScale = info.errorScale;
+      m_syncErrorSaturated = info.errorSaturated;
+
       m_resampleRatio = info.rr;
     }
   }
@@ -116,6 +143,11 @@ unsigned int CAudioSinkAE::AddPackets(const DVDAudioFrame &audioframe)
   {
     m_syncErrorTime = 0;
     m_syncError = 0.0;
+    m_syncErrorRaw = 0.0;
+    m_syncErrorRawValid = false;
+    m_syncErrorScale = 1.0;
+    m_syncErrorSaturated = false;
+    m_syncErrorAcquire = false;
   }
 
   // Use wall-clock deadline independent of playback speed (fixes dimensional error
@@ -227,6 +259,12 @@ void CAudioSinkAE::Flush()
   }
   m_playingPts = DVD_NOPTS_VALUE;
   m_syncError = 0.0;
+  m_syncErrorRaw = 0.0;
+  m_syncErrorRawValid = false;
+  m_syncErrorScale = 1.0;
+  m_syncErrorSaturated = false;
+  m_syncErrorAcquire = false;
+  m_syncWasInSync = false;
   m_syncErrorTime = 0;
 }
 
@@ -308,7 +346,13 @@ double CAudioSinkAE::GetSyncError()
 
 void CAudioSinkAE::SetSyncErrorCorrection(double correction)
 {
-  m_syncError += correction;
+  // The correction is real clock time. The unscaled copy is already in that
+  // domain; the reported one is not, so it is booked at the engine's own scale.
+  // Both have to end up describing the same remaining error, or the next
+  // decision is taken against a figure that says the clock moved further than
+  // it did.
+  m_syncError += correction * m_syncErrorScale;
+  m_syncErrorRaw += correction;
 }
 
 double CAudioSinkAE::GetResampleRatio()

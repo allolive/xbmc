@@ -236,6 +236,7 @@ void CAMLDRMUtils::CleanAndClose()
 
   if (m_crtc)
   {
+    m_crtcId.store(0, std::memory_order_relaxed);
     drmModeFreeCrtc(m_crtc);
     m_crtc = nullptr;
   }
@@ -257,6 +258,7 @@ void CAMLDRMUtils::CleanAndClose()
 
 void CAMLDRMUtils::aml_init_drmDevice()
 {
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
   CleanAndClose();
 
   // get resources of drmDevice
@@ -391,6 +393,8 @@ void CAMLDRMUtils::aml_init_drmDevice_display()
     throw std::runtime_error("failed to get crtc of drmDevice");
   }
 
+  m_crtcId.store(m_crtc->crtc_id, std::memory_order_relaxed);
+
   m_orig_crtc = static_cast<drmModeCrtcPtr>(malloc(sizeof(drmModeCrtc)));
   if (!m_orig_crtc)
   {
@@ -491,6 +495,7 @@ int CAMLDRMUtils::aml_get_drmDevice()
 // get current mode of drmDevice
 std::string CAMLDRMUtils::aml_get_drmDevice_mode()
 {
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
   std::string mode = "";
   std::string default_mode = "dummy_l";
 
@@ -511,6 +516,7 @@ std::string CAMLDRMUtils::aml_get_drmDevice_mode()
 // get all modes of current connected device
 std::string CAMLDRMUtils::aml_get_drmDevice_modes(void)
 {
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
   std::string modes ="";
 
   if (!m_connector)
@@ -532,6 +538,7 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
   const RenderStereoMode stereo_mode, std::string framebuffer_name, bool force_mode_switch,
   bool hotplug_mode_switch)
 {
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
   bool ret = false;
   const bool _hotplug_mode_switch = hotplug_mode_switch && m_connector && m_connector->count_modes > 1;
   const bool _force_mode_switch = force_mode_switch || _hotplug_mode_switch;
@@ -568,6 +575,8 @@ bool CAMLDRMUtils::aml_set_drmDevice_mode(const RESOLUTION_INFO &res, std::strin
       aml_set_framebuffer_resolution(res.iWidth, res.iHeight, framebuffer_name);
       return false;
     }
+
+    m_crtcId.store(m_crtc->crtc_id, std::memory_order_relaxed);
   }
 
   int fractional_rate = (res.fRefreshRate == floor(res.fRefreshRate)) ? 0 : 1;
@@ -723,6 +732,7 @@ int CAMLDRMUtils::aml_get_drmProperty(std::string name,
                                       void* data,
                                       int* data_len)
 {
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
   int ret = -1;
   unsigned int id;
 
@@ -732,6 +742,10 @@ int CAMLDRMUtils::aml_get_drmProperty(std::string name,
 
     switch (obj_type) {
       case DRM_MODE_OBJECT_CONNECTOR:
+        // A rebuild that failed freed this and left the object alive. Leave the
+        // function, not the switch: the one below reads the same pointer.
+        if (!m_connector)
+          return ret;
         id = m_connector->connector_id;
         ret = get_drmProp(id, name, obj_type, data, data_len);
         [[fallthrough]];
@@ -762,6 +776,7 @@ int CAMLDRMUtils::aml_get_drmProperty(std::string name,
 // set a property
 void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type, unsigned int value)
 {
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
   unsigned int id;
 
   if (!aml_get_drmDevice_connected())
@@ -770,6 +785,10 @@ void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type, 
 
     switch (obj_type) {
       case DRM_MODE_OBJECT_CONNECTOR:
+        // A rebuild that failed freed this and left the object alive. Leave the
+        // function, not the switch: the one below reads the same pointer.
+        if (!m_connector)
+          return;
         id = m_connector->connector_id;
         set_drmProp(id, name, obj_type, value, NULL);
         [[fallthrough]];
@@ -797,6 +816,7 @@ void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type, 
 
 void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type, std::string value)
 {
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
   uint32_t mode_blobid = 0;
 
   if (!aml_get_drmDevice_connected())
@@ -817,6 +837,7 @@ void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type, 
 // get modes count and status if current device is connected
 int CAMLDRMUtils::aml_get_drmDevice_modes_count(drmModeConnection *connection)
 {
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
   int mode_count = 0;
 
   if (connection)
@@ -831,6 +852,7 @@ int CAMLDRMUtils::aml_get_drmDevice_modes_count(drmModeConnection *connection)
 // get preferred mode of drmDevice
 std::string CAMLDRMUtils::aml_get_drmDevice_preferred_mode()
 {
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
   std::string mode, modes = "";
 
   if (!aml_get_drmDevice_connected())
@@ -854,6 +876,7 @@ std::string CAMLDRMUtils::aml_get_drmDevice_preferred_mode()
 bool CAMLDRMUtils::aml_set_drmDevice_active(std::string mode, int fractional_rate,
   const RenderStereoMode stereo_mode, bool force_mode_switch, bool active)
 {
+  std::unique_lock<CCriticalSection> lock(m_drmSection);
   bool ret = false;
   drmModeModeInfoPtr drmDevicemode = NULL;
   drmModeModeInfo syntheticMode = {};
@@ -1026,7 +1049,7 @@ void CAMLDisplay::aml_refresh_display_caps()
 
   if (edid.Exists())
   {
-    std::string valstr = edid.Get<std::string>().value();
+    std::string valstr = edid.Get<std::string>().value_or("");
     size_t pos = valstr.find("Physical size(mm):");
     if (pos != std::string::npos)
     {
@@ -1049,7 +1072,7 @@ void CAMLDisplay::aml_refresh_display_caps()
   bool support_3d = false;
   CSysfsPath amhdmitx0_support_3d{"/sys/class/amhdmitx/amhdmitx0/support_3d"};
   if (amhdmitx0_support_3d.Exists())
-    support_3d = amhdmitx0_support_3d.Get<int>().value();
+    support_3d = amhdmitx0_support_3d.Get<int>().value_or(0);
 
   m_support_3d = support_3d;
 }
@@ -1086,7 +1109,8 @@ void CAMLDisplay::handle_display_stereo_mode(const RenderStereoMode stereo_mode)
   {
     CSysfsPath _kernel_stereo_mode{"/sys/class/amhdmitx/amhdmitx0/stereo_mode"};
     if (_kernel_stereo_mode.Exists())
-      m_stereo_mode = static_cast<RenderStereoMode>(_kernel_stereo_mode.Get<int>().value());
+      m_stereo_mode = static_cast<RenderStereoMode>(
+          _kernel_stereo_mode.Get<int>().value_or(static_cast<int>(RenderStereoMode::UNDEFINED)));
   }
 
   if (m_stereo_mode != stereo_mode)
@@ -1148,7 +1172,7 @@ std::string CAMLDisplay::aml_get_preferred_mode()
   CSysfsPath cmdline{"/proc/cmdline"};
   if (cmdline.Exists())
   {
-    std::vector<std::string> cmdlinestr = StringUtils::Split(cmdline.Get<std::string>().value(), " ");
+    std::vector<std::string> cmdlinestr = StringUtils::Split(cmdline.Get<std::string>().value_or(""), " ");
 
     for (std::vector<std::string>::const_reverse_iterator item = cmdlinestr.rbegin(); item != cmdlinestr.rend(); ++item)
     {
@@ -1316,7 +1340,7 @@ bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolution
     CSysfsPath vesa_cap{"/sys/class/amhdmitx/amhdmitx0/vesa_cap"};
     if (vesa_cap.Exists())
     {
-      addstr = vesa_cap.Get<std::string>().value();
+      addstr = vesa_cap.Get<std::string>().value_or("");
       valstr += "\n" + addstr;
     }
   }
@@ -1329,12 +1353,12 @@ bool CAMLDisplay::aml_probe_resolutions(std::vector<RESOLUTION_INFO> &resolution
       CSysfsPath dcapfile3d{"/sys/class/amhdmitx/amhdmitx0/disp_cap_3d"};
       if (dcapfile3d.Exists())
       {
-        addstr = dcapfile3d.Get<std::string>().value();
+        addstr = dcapfile3d.Get<std::string>().value_or("");
         valstr += "\n" + addstr;
       }
     }
     else
-      valstr = user_dcapfile_3d.Get<std::string>().value();
+      valstr = user_dcapfile_3d.Get<std::string>().value_or("");
   }
 
 

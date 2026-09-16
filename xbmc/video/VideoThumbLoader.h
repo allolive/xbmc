@@ -10,9 +10,15 @@
 
 #include "FileItem.h"
 #include "ThumbLoader.h"
+#include "cores/VideoSettings.h"
 #include "utils/Artwork.h"
+#include "utils/StreamDetails.h"
 
 #include <map>
+#include <optional>
+#include <set>
+#include <span>
+#include <unordered_map>
 #include <vector>
 
 class CStreamDetails;
@@ -76,6 +82,8 @@ public:
 protected:
   CVideoDatabase *m_videoDatabase;
   ArtCache m_artCache;
+  std::unordered_map<int, CStreamDetails> m_streamDetailsCache; // by file id
+  std::unordered_map<int, std::optional<CVideoSettings>> m_videoSettingsCache; // by file id
 
   /*! \brief Tries to detect missing data/info from a file and adds those
    \param item The CFileItem to process
@@ -86,5 +94,17 @@ protected:
   const KODI::ART::Artwork& GetArtFromCache(const std::string& mediaType, const int id);
 
 private:
+  void PrefetchCachedWindow(const CFileItem* item);
+  void PrefetchArt(std::span<const CFileItemPtr> items);
+  void PrefetchStreamDetails(std::span<const CFileItemPtr> items);
+  bool GetItemArt(int id, const MediaType& mediaType, KODI::ART::Artwork& artwork);
+  void PrefetchLookupWindow(const CFileItem* item);
+  void PrefetchVideoSettings(std::span<const CFileItemPtr> items);
+  bool GetItemVideoSettings(const CFileItem& item, CVideoSettings& settings);
+
+  std::set<std::pair<MediaType, int>> m_parentArtKeys;
+  size_t m_cachedWindowStart{0};
+  size_t m_lookupWindowStart{0};
+
   int SetDetailsForItem(CVideoInfoTag& details, const KODI::ART::Artwork& artwork);
 };

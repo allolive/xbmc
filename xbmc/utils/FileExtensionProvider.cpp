@@ -29,6 +29,8 @@
 #include <string_view>
 #include <vector>
 
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 using namespace ADDON;
 using namespace KODI::ADDONS;
 

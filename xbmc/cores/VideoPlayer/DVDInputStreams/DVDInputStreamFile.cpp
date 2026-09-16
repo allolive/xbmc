@@ -14,6 +14,8 @@
 #include "utils/log.h"
 #include "video/VideoFileItemClassify.h"
 
+#include <cerrno>
+
 using namespace KODI;
 using namespace XFILE;
 
@@ -94,6 +96,18 @@ int CDVDInputStreamFile::Read(uint8_t* buf, int buf_size)
   if(!m_pFile) return -1;
 
   ssize_t ret = m_pFile->Read(buf, buf_size);
+
+  // Playback waits for a stalled source until stopped: a demuxer that meets the stall
+  // mid-element takes it for the end of the file.
+  if (ret == -EAGAIN && m_waitsForUser)
+  {
+    while (ret == -EAGAIN && !m_aborted)
+      ret = m_pFile->Read(buf, buf_size);
+    m_stallCount++;
+  }
+
+  if (ret == -EAGAIN)
+    return -EAGAIN; // the source stalled, ffmpeg reads this as "try again"
 
   if (ret < 0)
     return -1; // player will retry read in case of error until playback is stopped

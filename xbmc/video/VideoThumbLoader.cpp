@@ -38,10 +38,29 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <map>
+#include <set>
+#include <span>
+#include <unordered_map>
 #include <utility>
 
 using namespace KODI;
 using namespace XFILE;
+
+namespace
+{
+constexpr size_t PREFETCH_WINDOW = 500;
+constexpr size_t LOOKUP_PREFETCH_WINDOW = 100;
+
+// The file id GetVideoSettings(item) uses without a query, or -1
+int KnownFileId(const CFileItem& item)
+{
+  if (URIUtils::IsBlurayPath(item.GetDynPath()) || !item.HasVideoInfoTag())
+    return -1;
+  const int fileId = item.GetVideoInfoTag()->m_iFileId;
+  return fileId > 0 ? fileId : -1;
+}
+} // namespace
 
 CVideoThumbLoader::CVideoThumbLoader() : CThumbLoader()
 {
@@ -58,6 +77,11 @@ void CVideoThumbLoader::OnLoaderStart()
 {
   m_videoDatabase->Open();
   m_artCache.clear();
+  m_parentArtKeys.clear();
+  m_streamDetailsCache.clear();
+  m_videoSettingsCache.clear();
+  m_cachedWindowStart = 0;
+  m_lookupWindowStart = 0;
   CThumbLoader::OnLoaderStart();
 }
 
@@ -65,6 +89,9 @@ void CVideoThumbLoader::OnLoaderFinish()
 {
   m_videoDatabase->Close();
   m_artCache.clear();
+  m_parentArtKeys.clear();
+  m_streamDetailsCache.clear();
+  m_videoSettingsCache.clear();
   CThumbLoader::OnLoaderFinish();
 }
 
@@ -175,6 +202,8 @@ bool CVideoThumbLoader::LoadItem(CFileItem* pItem)
 
 bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
 {
+  PrefetchCachedWindow(pItem);
+
   if (pItem->IsShareOrDrive() || pItem->IsParentFolder())
     return false;
 
@@ -182,11 +211,26 @@ bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
 
   if (!pItem->HasVideoInfoTag() || !pItem->GetVideoInfoTag()->HasStreamDetails()) // no stream details
   {
-    if ((pItem->HasVideoInfoTag() &&
-         pItem->GetVideoInfoTag()->m_iFileId >= 0) // file (or maybe folder) is in the database
-        || (!pItem->IsFolder() &&
-            VIDEO::IsVideo(
-                *pItem))) // Some other video file for which we haven't yet got any database details
+    const auto prefetched = pItem->HasVideoInfoTag()
+                                ? m_streamDetailsCache.find(pItem->GetVideoInfoTag()->m_iFileId)
+                                : m_streamDetailsCache.end();
+    if (prefetched != m_streamDetailsCache.end())
+    {
+      if (prefetched->second.HasItems())
+      {
+        CVideoInfoTag& tag = *pItem->GetVideoInfoTag();
+        tag.m_streamDetails = std::move(prefetched->second);
+        if (tag.m_streamDetails.GetVideoDuration() > 0)
+          tag.SetDuration(tag.m_streamDetails.GetVideoDuration());
+        pItem->SetInvalid();
+      }
+      m_streamDetailsCache.erase(prefetched);
+    }
+    else if ((pItem->HasVideoInfoTag() &&
+              pItem->GetVideoInfoTag()->m_iFileId >= 0) // file (or maybe folder) is in the database
+             || (!pItem->IsFolder() &&
+                 VIDEO::IsVideo(
+                     *pItem))) // Some other video file for which we haven't yet got any database details
     {
       if (m_videoDatabase->GetStreamDetails(*pItem))
         pItem->SetInvalid();
@@ -234,6 +278,8 @@ bool CVideoThumbLoader::LoadItemCached(CFileItem* pItem)
 
 bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
 {
+  PrefetchLookupWindow(pItem);
+
   if (pItem->IsShareOrDrive() || pItem->IsParentFolder() || pItem->GetPath() == "add")
     return false;
 
@@ -324,8 +370,8 @@ bool CVideoThumbLoader::LoadItemLookup(CFileItem* pItem)
       }
     }
     if (settings->GetBool(CSettings::SETTING_MYVIDEOS_EXTRACTFLAGS) &&
-        CDVDFileInfo::CanExtract(*pItem) &&
-        (!pItem->HasVideoInfoTag() || !pItem->GetVideoInfoTag()->HasStreamDetails() || update))
+        (!pItem->HasVideoInfoTag() || !pItem->GetVideoInfoTag()->HasStreamDetails() || update) &&
+        CDVDFileInfo::CanExtract(*pItem))
     {
       // No tag or no details set, so extract them
       CLog::LogF(LOGDEBUG, "trying to extract filestream details from video file {}",
@@ -463,7 +509,7 @@ bool CVideoThumbLoader::FillLibraryArt(CFileItem &item)
           !artwork.empty())
         item.AppendArt(artwork);
     }
-    else if (m_videoDatabase->GetArtForItem(tag.m_iDbId, tag.m_type, artwork) && !artwork.empty())
+    else if (GetItemArt(tag.m_iDbId, tag.m_type, artwork) && !artwork.empty())
     {
       item.AppendArt(artwork);
     }
@@ -655,7 +701,7 @@ void CVideoThumbLoader::DetectAndAddMissingItemData(CFileItem &item)
     // check for custom stereomode setting in video settings
     CVideoSettings itemVideoSettings;
     m_videoDatabase->Open();
-    if (m_videoDatabase->GetVideoSettings(item, itemVideoSettings) &&
+    if (GetItemVideoSettings(item, itemVideoSettings) &&
         itemVideoSettings.m_StereoMode != static_cast<int>(RenderStereoMode::OFF))
     {
       stereoMode = CStereoscopicsManager::ConvertGuiStereoModeToString(
@@ -671,6 +717,167 @@ void CVideoThumbLoader::DetectAndAddMissingItemData(CFileItem &item)
 
   if (!stereoMode.empty())
     item.SetProperty("stereomode", CStereoscopicsManager::NormalizeStereoMode(stereoMode));
+}
+
+void CVideoThumbLoader::PrefetchCachedWindow(const CFileItem* item)
+{
+  if (m_cachedWindowStart >= m_vecItems.size() || m_vecItems[m_cachedWindowStart].get() != item)
+    return;
+
+  const auto window = std::span(m_vecItems).subspan(
+      m_cachedWindowStart, std::min(PREFETCH_WINDOW, m_vecItems.size() - m_cachedWindowStart));
+  m_cachedWindowStart += window.size();
+  m_streamDetailsCache.clear();
+
+  try
+  {
+    PrefetchArt(window);
+    PrefetchStreamDetails(window);
+  }
+  catch (...)
+  {
+    CLog::LogF(LOGERROR, "failed");
+    m_artCache.clear();
+    m_streamDetailsCache.clear();
+  }
+}
+
+void CVideoThumbLoader::PrefetchArt(std::span<const CFileItemPtr> items)
+{
+  // The items and parents FillLibraryArt() will read, by media type
+  std::map<MediaType, std::set<int>> ids;
+  const auto add = [&](const MediaType& mediaType, int id)
+  {
+    if (!m_artCache.contains(std::make_pair(mediaType, id)))
+      ids[mediaType].insert(id);
+  };
+  const auto addParent = [&](const MediaType& mediaType, int id)
+  {
+    m_parentArtKeys.emplace(mediaType, id);
+    add(mediaType, id);
+  };
+
+  for (const auto& item : items)
+  {
+    if (item->IsShareOrDrive() || item->IsParentFolder() || !item->HasVideoInfoTag() ||
+        item->GetProperty("libraryartfilled").asBoolean())
+      continue;
+
+    const CVideoInfoTag& tag = *item->GetVideoInfoTag();
+    if (tag.m_iDbId <= -1 || tag.m_type.empty())
+      continue;
+
+    if (!VIDEO::IsVideoAssetFile(*item))
+      add(tag.m_type, tag.m_iDbId);
+
+    if (tag.m_type == MediaTypeEpisode || tag.m_type == MediaTypeSeason)
+    {
+      if (tag.m_iIdShow >= 0)
+        addParent(MediaTypeTvShow, tag.m_iIdShow);
+      if (tag.m_type == MediaTypeEpisode && tag.m_iSeason > -1)
+        addParent(MediaTypeSeason, tag.m_iIdSeason);
+    }
+    else if (tag.m_type == MediaTypeMovie && tag.m_set.GetID() >= 0)
+      addParent(MediaTypeVideoCollection, tag.m_set.GetID());
+  }
+
+  for (const auto& [mediaType, idSet] : ids)
+  {
+    std::unordered_map<int, KODI::ART::Artwork> art;
+    const bool complete = m_videoDatabase->GetArtForItems(
+        std::vector<int>(idSet.begin(), idSet.end()), mediaType, art, [this] { return m_bStop; });
+    for (auto& [id, artwork] : art)
+      m_artCache.try_emplace(std::make_pair(mediaType, id), std::move(artwork));
+    if (!complete)
+      break;
+  }
+}
+
+void CVideoThumbLoader::PrefetchStreamDetails(std::span<const CFileItemPtr> items)
+{
+  // The files LoadItemCached() will read stream details for
+  std::set<int> ids;
+  for (const auto& item : items)
+  {
+    if (item->IsShareOrDrive() || item->IsParentFolder() || !item->HasVideoInfoTag())
+      continue;
+
+    const CVideoInfoTag& tag = *item->GetVideoInfoTag();
+    if (!tag.HasStreamDetails() && tag.m_iFileId >= 0)
+      ids.insert(tag.m_iFileId);
+  }
+
+  m_videoDatabase->GetStreamDetailsForFiles(std::vector<int>(ids.begin(), ids.end()),
+                                            m_streamDetailsCache, [this] { return m_bStop; });
+}
+
+void CVideoThumbLoader::PrefetchLookupWindow(const CFileItem* item)
+{
+  if (m_lookupWindowStart >= m_vecItems.size() || m_vecItems[m_lookupWindowStart].get() != item)
+    return;
+
+  const auto window = std::span(m_vecItems).subspan(
+      m_lookupWindowStart,
+      std::min(LOOKUP_PREFETCH_WINDOW, m_vecItems.size() - m_lookupWindowStart));
+  m_lookupWindowStart += window.size();
+  m_videoSettingsCache.clear();
+
+  try
+  {
+    PrefetchVideoSettings(window);
+  }
+  catch (...)
+  {
+    CLog::LogF(LOGERROR, "failed");
+    m_videoSettingsCache.clear();
+  }
+}
+
+void CVideoThumbLoader::PrefetchVideoSettings(std::span<const CFileItemPtr> items)
+{
+  // The files DetectAndAddMissingItemData() will read video settings for
+  std::set<int> ids;
+  for (const auto& item : items)
+  {
+    if (item->IsShareOrDrive() || item->IsParentFolder() ||
+        (item->IsFolder() && !item->GetProperty("IsHybridFolder").asBoolean(false)))
+      continue;
+
+    const int fileId = KnownFileId(*item);
+    if (fileId > 0 && item->GetVideoInfoTag()->m_streamDetails.GetStereoMode().empty())
+      ids.insert(fileId);
+  }
+
+  m_videoDatabase->GetVideoSettingsForFiles(std::vector<int>(ids.begin(), ids.end()),
+                                            m_videoSettingsCache, [this] { return m_bStop; });
+}
+
+bool CVideoThumbLoader::GetItemVideoSettings(const CFileItem& item, CVideoSettings& settings)
+{
+  const auto it = m_videoSettingsCache.find(KnownFileId(item));
+  if (it == m_videoSettingsCache.end())
+    return m_videoDatabase->GetVideoSettings(item, settings);
+
+  const bool found = it->second.has_value();
+  if (found)
+    settings = *it->second;
+  m_videoSettingsCache.erase(it);
+  return found;
+}
+
+bool CVideoThumbLoader::GetItemArt(int id, const MediaType& mediaType, KODI::ART::Artwork& artwork)
+{
+  const auto it = m_artCache.find(std::make_pair(mediaType, id));
+  if (it == m_artCache.end())
+    return m_videoDatabase->GetArtForItem(id, mediaType, artwork);
+
+  for (const auto& [artType, url] : it->second)
+    artwork.try_emplace(artType, url);
+
+  // Parent art stays for the other items of the show, season or set
+  if (!m_parentArtKeys.contains(it->first))
+    m_artCache.erase(it);
+  return true;
 }
 
 const KODI::ART::Artwork& CVideoThumbLoader::GetArtFromCache(const std::string& mediaType,
