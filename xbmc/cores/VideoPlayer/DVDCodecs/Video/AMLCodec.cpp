@@ -2583,7 +2583,8 @@ void CAMLCodec::CloseDecoder()
   auto* AmlDisplay =
       static_cast<CWinSystemAmlogic*>(CServiceBroker::GetWinSystem())->GetAmlDisplay();
   int dolby_vision_policy = AmlDisplay->aml_get_drmProperty("dv_policy", DRM_MODE_OBJECT_CRTC);
-  bool dv_enabled(AmlDisplay->aml_get_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC));
+  // A failed read (-1, e.g. connector not connected) is not an enabled core.
+  bool dv_enabled(AmlDisplay->aml_get_drmProperty("dv_enable", DRM_MODE_OBJECT_CRTC) > 0);
   CLog::Log(LOGDEBUG, "CAMLCodec::CloseDecoder");
 
   SetPollDevice(-1);
@@ -2630,7 +2631,7 @@ void CAMLCodec::CloseDecoder()
   {
     // the transition needs a few display frames before the core powers down
     std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
-    while (AmlDisplay->aml_get_drmProperty("dv_status", DRM_MODE_OBJECT_CRTC) != 0 &&
+    while (AmlDisplay->aml_get_drmProperty("dv_status", DRM_MODE_OBJECT_CRTC) > 0 &&
            (std::chrono::system_clock::now() - now) < std::chrono::seconds(m_decoder_timeout))
       usleep(10000); // wait 10ms
 
