@@ -838,6 +838,10 @@ void CAMLDRMUtils::aml_set_drmProperty(std::string name, unsigned int obj_type, 
   }
 
   aml_set_drmProperty(name, obj_type, mode_blobid);
+
+  // String blob properties (e.g. dv_debug) are consumed synchronously by the
+  // set-property ioctl and not retained; drop ours or it lives until m_fd closes.
+  drmModeDestroyPropertyBlob(m_fd, mode_blobid);
 }
 
 // get modes count and status if current device is connected
