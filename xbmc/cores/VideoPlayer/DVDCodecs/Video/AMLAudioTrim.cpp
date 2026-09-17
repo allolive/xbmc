@@ -409,6 +409,17 @@ void CAMLAudioTrim::Settle(double reading)
   // it would simply be integrated back out again.
   const double err = drift - aim;
 
+  // Off (audiolead 0: no slew, so Update() leaves the ceiling at zero). Nothing
+  // is written, so there is no level to integrate and no answer to judge.
+  if (m_levelMax <= 0.0)
+  {
+    m_want = 0.0;
+    m_clamped = 0;
+    if (std::abs(err) >= DEADBAND)
+      CLog::Log(LOGDEBUG, LOGAUDIO, "CAMLAudioTrim: audio {:+.1f}ppm, loop off", drift * 1e6);
+    return;
+  }
+
   if (std::abs(err) < DEADBAND)
     return;
 
