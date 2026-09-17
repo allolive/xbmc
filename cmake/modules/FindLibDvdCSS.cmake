@@ -30,6 +30,8 @@ if(NOT TARGET LIBRARY::${CMAKE_FIND_PACKAGE_NAME})
       set(${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_C_FLAGS "-DPATH_MAX=2048 -D_BSD_SOURCE")
     endif()
 
+    string(APPEND ${${CMAKE_FIND_PACKAGE_NAME}_MODULE}_C_FLAGS "-Wno-array-parameter")
+
     if(WIN32 OR WINDOWS_STORE)
       if(WINDOWS_STORE)
         list(APPEND patches "${CORE_SOURCE_DIR}/tools/depends/target/${${CMAKE_FIND_PACKAGE_NAME}_MODULE_LC}/03-win-uwpfixes.patch")

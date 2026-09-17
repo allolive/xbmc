@@ -45,6 +45,9 @@ if(NOT TARGET LIBRARY::${CMAKE_FIND_PACKAGE_NAME})
     generate_patchcommand("${patches}")
     unset(patches)
 
+    list(APPEND PATCH_COMMAND COMMAND sed -i "s|(RAND_MAX+1.0)|(RAND_MAX+1.0f)|" src/vm/decoder.c src/vm/play.c)
+    list(APPEND PATCH_COMMAND COMMAND sed -i "s|.*getting information.*|#pragma GCC diagnostic ignored \"-Wreturn-type\"|g" src/vm/vmget.c)
+
     if(${CMAKE_VERSION} VERSION_GREATER_EQUAL 3.26)
       set(configure_env_mod ${CMAKE_COMMAND} -E env --modify NINJA=set:${NINJA_EXECUTABLE}
                                                     ${additional_env_mod})

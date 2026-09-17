@@ -133,3 +133,5 @@ target_link_libraries(lib${APP_NAME_LC} PUBLIC upnp)
 if(CORE_SYSTEM_NAME STREQUAL windowsstore)
 	set_target_properties(upnp PROPERTIES STATIC_LIBRARY_FLAGS "/ignore:4264")
 endif()
+
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-nonnull-compare -Wno-unused-label -Wno-double-promotion")
