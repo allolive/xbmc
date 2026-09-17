@@ -541,7 +541,8 @@ bool CBitstreamConverter::Open(enum AVCodecID codec,
       return false;
       break;
     case AV_CODEC_ID_VVC:
-      if (in_extradata && in_extradata[0] == 0xff && (in_extradata[1] & 0xf0) == 0x0)
+      if (in_extradata && in_extrasize >= 2 && in_extradata[0] == 0xff &&
+          (in_extradata[1] & 0xf0) == 0x0)
       {
         std::string extradatastr;
         CLog::Log(LOGINFO, "CBitstreamConverter::Open VVC, convert to annexb format");
@@ -549,6 +550,12 @@ bool CBitstreamConverter::Open(enum AVCodecID codec,
         m_extraData = FFmpegExtraData(in_extradata, in_extrasize);
         m_convert_bytestream =
             BitstreamConvertInitVVC(m_extraData.GetData(), m_extraData.GetSize());
+        if (!m_convert_bytestream)
+        {
+          // malformed vvcC: detect the packet format per packet until a keyframe
+          CLog::Log(LOGWARNING, "CBitstreamConverter::Open VVC, invalid vvcC extradata");
+          m_start_decode = false;
+        }
       }
       else
       {
@@ -766,49 +773,82 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
     {
       if (m_to_annexb)
       {
-        int nal_stream_pos = 0;
+        const size_t size = iSize > 0 ? static_cast<size_t>(iSize) : 0;
+        size_t pos = 0;
+        bool start_decode = false;
 
         m_inputSize = iSize;
         m_inputBuffer = pData;
 
-        if (!m_start_decode)
+        if (!m_start_decode && size >= 4)
         {
-          uint32_t packet_format = AV_RB32(m_inputBuffer);
+          uint32_t packet_format = AV_RB32(pData);
           m_convert_bytestream = packet_format != 0x1 && packet_format != 0x100;
         }
 
-        while (nal_stream_pos < iSize)
+        if (m_convert_bytestream)
         {
-          if (m_convert_bytestream)
+          // rewrite a copy: the decoder may hand the same demuxer packet back
+          // in when its buffer is full, and it must still be length-prefixed
+          m_convertBuffer =
+              static_cast<uint8_t*>(av_malloc(size + AV_INPUT_BUFFER_PADDING_SIZE));
+          if (!m_convertBuffer)
+            return false;
+          memcpy(m_convertBuffer, pData, size);
+          memset(m_convertBuffer + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+
+          while (size - pos >= 4)
           {
             static const uint8_t nalu_header[4] = {0, 0, 0, 1};
-            uint32_t unit_size = AV_RB32(m_inputBuffer + nal_stream_pos) + 4;
-            uint16_t unit_type = (AV_RB16(m_inputBuffer + nal_stream_pos + 4) >> 3) & 0x1f;
+            const uint32_t nal_size = AV_RB32(m_convertBuffer + pos);
 
-            if (unit_type == VVC_SPS_NUT || IsIDR(unit_type))
-              m_start_decode = true;
+            if (nal_size > size - pos - 4)
+              break;
 
-            memcpy(m_inputBuffer + nal_stream_pos, nalu_header, 4);
-            nal_stream_pos += unit_size;
+            if (nal_size >= 2)
+            {
+              uint16_t unit_type = (AV_RB16(m_convertBuffer + pos + 4) >> 3) & 0x1f;
+              if (unit_type == VVC_SPS_NUT || IsIDR(unit_type))
+                start_decode = true;
+            }
+
+            memcpy(m_convertBuffer + pos, nalu_header, 4);
+            pos += 4 + nal_size;
           }
-          else if (!m_start_decode)
+
+          if (pos != size)
           {
-            uint8_t* buf = m_inputBuffer + nal_stream_pos;
+            av_free(m_convertBuffer);
+            m_convertBuffer = NULL;
+            m_convertSize = 0;
+            CLog::Log(LOGDEBUG, LOGVIDEO,
+                      "CBitstreamConverter::Convert: invalid VVC NAL length at {} of {}", pos,
+                      size);
+            return false;
+          }
+
+          m_convertSize = static_cast<int>(size);
+          if (start_decode)
+            m_start_decode = true;
+        }
+        else
+        {
+          while (!m_start_decode && size - pos >= 5)
+          {
+            const uint8_t* buf = pData + pos;
 
             if (buf[0] == 0x0 && buf[1] == 0x0 && buf[2] == 0x1)
             {
-              uint16_t unit_type = (AV_RB16(m_inputBuffer + nal_stream_pos + 3) >> 3) & 0x1f;
+              uint16_t unit_type = (AV_RB16(buf + 3) >> 3) & 0x1f;
 
               if (unit_type == VVC_SPS_NUT || IsIDR(unit_type))
                 m_start_decode = true;
 
-              nal_stream_pos += 5;
+              pos += 5;
             }
             else
-              nal_stream_pos++;
+              pos++;
           }
-          else
-            break;
         }
       }
       return true;
@@ -1165,81 +1205,126 @@ bool CBitstreamConverter::BitstreamConvertInitVVC(void* in_extradata, int in_ext
   m_sps_pps_context.sps_pps_data = NULL;
 
   // nothing to filter
-  if (!in_extradata)
+  if (!in_extradata || in_extrasize < 1)
     return false;
 
-  uint16_t unit_size;
+  uint16_t unit_size, num_nalus;
   uint32_t total_size = 0;
   uint8_t *out = NULL, array_nb, nal_type, sps_seen = 0, pps_seen = 0;
-  uint8_t num_sublayers, num_bytes_constraint_info, ptl_sublayer_level_present_flags;
   const uint8_t* extradata = (uint8_t*)in_extradata;
+  const uint8_t* const extradata_end = extradata + in_extrasize;
   static const uint8_t nalu_header[4] = {0, 0, 0, 1};
+
+  auto remaining = [&]() { return static_cast<size_t>(extradata_end - extradata); };
 
   // length coded size
   m_sps_pps_context.length_size = sizeof(nalu_header);
 
-  // skip several fields of VVCDecoderConfigurationRecord
-  // extradata point to 00 after FF, 8b
-  extradata++;
-  // ols_idx, num_sublayers , constant_frame_rate, chroma_format_idc, 16b
-  num_sublayers = ((extradata[0] << 8 | extradata[1]) >> 4) & 0x7;
-  extradata += 2;
-  // bit_depth_minus8, 8b
-  extradata++;
-  // num_bytes_constraint_info, 8b
-  num_bytes_constraint_info = extradata[0] & 0x3f;
-  extradata++;
-  // general_profile_idc, general_tier_flag, 8b
-  // general_level_idc, 8b
-  extradata += 2;
-  // constraint_info, 8b * num_bytes_constraint_info
-  extradata += num_bytes_constraint_info;
-  // ptl_sublayer_level_present_flag, 8b
-  ptl_sublayer_level_present_flags = *extradata++ & 0x3f;
-  for (int i = num_sublayers - 2; i >= 0; i--)
-    if ((ptl_sublayer_level_present_flags >> i) & 0x1)
-      extradata++;
-  // ptl_num_sub_profiles, 8b
-  extradata++;
-  // max_picture_width, 16b
-  extradata += 2;
-  // max_picture_height, 16b
-  extradata += 2;
-  // avg_frame_rate, 16b
-  extradata += 2;
+  // VvcDecoderConfigurationRecord (ISO/IEC 14496-15), parsed like ffmpeg's cbs_h266
+  // reserved 5b, LengthSizeMinusOne 2b, ptl_present_flag 1b
+  const bool ptl_present = *extradata++ & 0x1;
+  if (ptl_present)
+  {
+    // ols_idx 9b, num_sublayers 3b, constant_frame_rate 2b, chroma_format_idc 2b,
+    // bit_depth_minus8 3b, reserved 5b,
+    // VvcPTLRecord: reserved 2b, num_bytes_constraint_info 6b
+    if (remaining() < 4)
+      return false;
+    const unsigned int num_sublayers = ((extradata[0] << 8 | extradata[1]) >> 4) & 0x7;
+    const unsigned int num_bytes_constraint_info = extradata[3] & 0x3f;
+    extradata += 4;
+
+    // general_profile_idc 7b, general_tier_flag 1b, general_level_idc 8b,
+    // constraint info 8b * num_bytes_constraint_info
+    if (remaining() < 2 + num_bytes_constraint_info)
+      return false;
+    extradata += 2 + num_bytes_constraint_info;
+
+    // ptl_sublayer_level_present_flag[] padded to 8b, only when num_sublayers > 1,
+    // followed by one sublayer_level_idc byte per set flag. The padding bits are
+    // zero, so count all set bits: this also copes with muxers that pack the
+    // flags into the low bits of the byte.
+    if (num_sublayers > 1)
+    {
+      if (remaining() < 1)
+        return false;
+      unsigned int count = 0;
+      for (uint8_t flags = *extradata++; flags; flags &= flags - 1)
+        count++;
+      count = std::min(count, num_sublayers - 1);
+      if (remaining() < count)
+        return false;
+      extradata += count;
+    }
+
+    // ptl_num_sub_profiles 8b, general_sub_profile_idc 32b * ptl_num_sub_profiles
+    if (remaining() < 1 || remaining() - 1 < 4u * extradata[0])
+      return false;
+    extradata += 1 + 4u * extradata[0];
+
+    // max_picture_width 16b, max_picture_height 16b, avg_frame_rate 16b
+    if (remaining() < 6)
+      return false;
+    extradata += 6;
+  }
+
   // num_of_arrays, 8b
+  if (remaining() < 1)
+    return false;
   array_nb = *extradata++;
 
   while (array_nb--)
   {
-    void* tmp;
-
-    extradata++; // array_completeness, 8b
-    if (extradata[0] == 0x0 && extradata[1] == 0x01)
+    // array_completeness 1b, reserved 2b, NAL_unit_type 5b
+    if (remaining() < 1)
     {
-      extradata += 2; // nal header, 16b
-      unit_size = extradata[0] << 8 | extradata[1];
-      extradata += 2; // nal unit size, 16b
-      nal_type = (extradata[1] >> 3) & 0x1f;
+      av_free(out);
+      return false;
+    }
+    nal_type = *extradata++ & 0x1f;
 
-      if (nal_type == VVC_SPS_NUT)
+    // DCI and OPI arrays carry exactly one NAL unit and no num_nalus field
+    num_nalus = 1;
+    if (nal_type != VVC_DCI_NUT && nal_type != VVC_OPI_NUT)
+    {
+      if (remaining() < 2)
       {
-        sps_seen = 1;
-        m_start_decode = true;
+        av_free(out);
+        return false;
       }
-      else if (nal_type == VVC_PPS_NUT)
+      num_nalus = extradata[0] << 8 | extradata[1];
+      extradata += 2;
+    }
+
+    while (num_nalus--)
+    {
+      void* tmp;
+
+      if (remaining() < 2)
       {
-        pps_seen = 1;
+        av_free(out);
+        return false;
       }
-      else
+      unit_size = extradata[0] << 8 | extradata[1];
+      extradata += 2;
+      if (remaining() < static_cast<size_t>(unit_size))
+      {
+        av_free(out);
+        return false;
+      }
+
+      if (nal_type != VVC_SPS_NUT && nal_type != VVC_PPS_NUT)
       {
         extradata += unit_size;
         continue;
       }
-      total_size += unit_size + 4;
+      if (nal_type == VVC_SPS_NUT)
+        sps_seen = 1;
+      else
+        pps_seen = 1;
 
-      if (total_size > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE ||
-          (extradata + unit_size) > ((uint8_t*)in_extradata + in_extrasize))
+      total_size += unit_size + 4;
+      if (total_size > INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE)
       {
         av_free(out);
         return false;
@@ -1255,8 +1340,6 @@ bool CBitstreamConverter::BitstreamConvertInitVVC(void* in_extradata, int in_ext
       memcpy(out + total_size - unit_size, extradata, unit_size);
       extradata += unit_size;
     }
-    else
-      return false;
   }
 
   if (out)

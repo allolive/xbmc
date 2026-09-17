@@ -18,7 +18,10 @@ public:
   void       SkipBits(int nbits);
   uint32_t   GetBits(int nbits);
   unsigned int Position() { return m_posBits; }
-  unsigned int AvailableBits() { return length * 8 - m_posBits; }
+  unsigned int AvailableBits()
+  {
+    return m_posBits >= length * 8 ? 0 : length * 8 - m_posBits;
+  }
 
 private:
   const uint8_t *buffer, *start;

@@ -22,11 +22,32 @@
 namespace
 {
 constexpr const char* ENABLE_PATH = "/storage/.kodi/userdata/aml-audio-trim";
-constexpr const char* TRIM_PATH =
-    "/sys/module/amlogic_clk_soc_g12a/parameters/audio_sdm_trim";
 
-//! The hardware ignores the field's low bit and rounds up, so a step of one
-//! lands on the same divider half the time. Two always moves.
+//! Where the trim lives depends on which clock driver runs the SoC: the g12a
+//! one trims mpll0 on g12a/g12b/sm1, the s7d one the HIFI PLL on the
+//! S905X5M and the s6 one the HIFI PLL on the plain S905X5; any
+//! other or unidentified SoC keeps the g12a node, as before. Chosen by SoC and
+//! not by which node exists, because a kernel with both drivers built in
+//! registers both nodes whether or not their driver ever probed.
+const char* TrimPath()
+{
+  static const char* const path = []() -> const char* {
+    switch (aml_get_cpufamily_id())
+    {
+      case AML_S7D:
+        return "/sys/module/amlogic_clk_soc_s7d/parameters/audio_sdm_trim";
+      case AML_S6:
+        return "/sys/module/amlogic_clk_soc_s6/parameters/audio_sdm_trim";
+      default:
+        return "/sys/module/amlogic_clk_soc_g12a/parameters/audio_sdm_trim";
+    }
+  }();
+  return path;
+}
+
+//! The g12a driver's mpll0 ignores the field's low bit and rounds up, so a step
+//! of one lands on the same divider half the time. Two always moves. S7D and S6 share
+//! this step and the kernel's limit of forty until measured on that hardware.
 constexpr int STEP = 2;
 
 //! What the level may reach while the loop is only nulling the rate. Sixty parts
@@ -156,7 +177,7 @@ CAMLAudioTrim::~CAMLAudioTrim()
 
   try
   {
-    CSysfsPath{TRIM_PATH}.Set(0);
+    CSysfsPath{TrimPath()}.Set(0);
   }
   catch (...)
   {
@@ -179,7 +200,7 @@ std::optional<int> CAMLAudioTrim::ReadLevel() const
 {
   try
   {
-    CSysfsPath path{TRIM_PATH};
+    CSysfsPath path{TrimPath()};
     if (!path.Exists())
       return std::nullopt;
 
@@ -203,7 +224,7 @@ bool CAMLAudioTrim::Supported()
 {
   try
   {
-    return CSysfsPath{TRIM_PATH}.Exists();
+    return CSysfsPath{TrimPath()}.Exists();
   }
   catch (...)
   {
@@ -215,7 +236,7 @@ bool CAMLAudioTrim::WriteLevel(int level)
 {
   try
   {
-    CSysfsPath{TRIM_PATH}.Set(level);
+    CSysfsPath{TrimPath()}.Set(level);
   }
   catch (...)
   {
@@ -409,6 +430,17 @@ void CAMLAudioTrim::Settle(double reading)
   // it would simply be integrated back out again.
   const double err = drift - aim;
 
+  // Off (audiolead 0: no slew, so Update() leaves the ceiling at zero). Nothing
+  // is written, so there is no level to integrate and no answer to judge.
+  if (m_levelMax <= 0.0)
+  {
+    m_want = 0.0;
+    m_clamped = 0;
+    if (std::abs(err) >= DEADBAND)
+      CLog::Log(LOGDEBUG, LOGAUDIO, "CAMLAudioTrim: audio {:+.1f}ppm, loop off", drift * 1e6);
+    return;
+  }
+
   if (std::abs(err) < DEADBAND)
     return;
 
@@ -517,7 +549,7 @@ void CAMLAudioTrim::Update(const std::optional<double>& error,
     m_checked = true;
     m_present = ReadLevel().has_value();
     if (!m_present)
-      CLog::Log(LOGINFO, "CAMLAudioTrim: no audio_sdm_trim in this kernel");
+      CLog::Log(LOGINFO, "CAMLAudioTrim: no {} in this kernel", TrimPath());
   }
 
   if (!m_present)

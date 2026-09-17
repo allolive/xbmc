@@ -150,9 +150,9 @@ private:
   static double m_ttd;
   CProcessInfo &m_processInfo;
   CAMLGenlock      m_genlock;
-  int m_decoder_timeout;
+  int m_decoder_timeout{0};
   std::chrono::time_point<std::chrono::system_clock> m_tp_last_frame;
 
-  bool            m_buffer_level_ready;
-  float           m_minimum_buffer_level;
+  bool            m_buffer_level_ready{false};
+  float           m_minimum_buffer_level{0.0f};
 };
