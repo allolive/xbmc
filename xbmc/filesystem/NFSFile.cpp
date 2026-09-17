@@ -417,7 +417,8 @@ void CNfsConnection::Deinit()
     m_pNfsContext = NULL;
   }
   clearMembers();
-  // clear any keep alive timeouts on deinit
+  // clear any keep alive timeouts on deinit; CheckIfIdle iterates them under keepAliveLock
+  std::unique_lock lock(keepAliveLock);
   m_KeepAliveTimeouts.clear();
 }
 
@@ -493,6 +494,15 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
 {
   uint64_t offset = 0;
   char buffer[32];
+
+  // The caller holds keepAliveLock, and CNFSFile::Close takes the two locks the other
+  // way round, so waiting here can deadlock the main thread. Skip a busy round.
+  std::unique_lock lock(*this, std::try_to_lock);
+  if (!lock.owns_lock())
+    return;
+
+  // Look the context up only now: Deinit and destroyContext free contexts under the
+  // connection lock, so one fetched before taking it may already be gone.
   // this also refreshes the last accessed time for the context
   // true forces a cachehit regardless the context is timedout
   // on this call we are sure its not timedout even if the last accessed
@@ -501,12 +511,6 @@ void CNfsConnection::keepAlive(const std::string& _exportPath, struct nfsfh* _pF
 
   if (!pContext)// this should normally never happen - paranoia
     pContext = m_pNfsContext;
-
-  // The caller holds keepAliveLock, and CNFSFile::Close takes the two locks the other
-  // way round, so waiting here can deadlock the main thread. Skip a busy round.
-  std::unique_lock lock(*this, std::try_to_lock);
-  if (!lock.owns_lock())
-    return;
 
   // Only an NFSv4 lease needs the read. NFSv3 is stateless and libnfs reconnects a
   // dropped connection, while a read to a server that stopped answering would hold
