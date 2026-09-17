@@ -967,54 +967,100 @@ static int hevc_write_header(am_private_t *para, am_packet_t *pkt)
 
 int vvc_add_frame_dec_info(am_private_t *para)
 {
-  size_t size = para->extradata.GetSize();
+  const size_t size = para->extradata.GetSize();
+  const uint8_t *header_data = para->extradata.GetData();
   size_t data_pos = 0;
 
-  if (size)
+  free(para->hdr_buf.data);
+  para->hdr_buf.data = NULL;
+  para->hdr_buf.size = 0;
+
+  if (!size || !header_data)
+    return PLAYER_SUCCESS;
+
+  // VvcDecoderConfigurationRecord (ISO/IEC 14496-15 11.2.4.2), first byte is
+  // '11111'b reserved, 2 bits LengthSizeMinusOne, 1 bit ptl_present_flag
+  if ((header_data[0] & 0xf8) == 0xf8)
   {
-    uint8_t *header_data = para->extradata.GetData();
+    static const uint8_t nalu_header[4] = {0, 0, 0, 1};
+    size_t pos = 1;
 
-    if (header_data[0] == 0xff && (header_data[1] & 0xf0) == 0x0)
+#define VVCC_NEED(n) \
+    do { \
+      if (size - pos < (size_t)(n)) \
+        goto vvcc_invalid; \
+    } while (0)
+
+    if (header_data[0] & 0x01) // ptl_present_flag
     {
-      uint16_t unit_size;
-      uint8_t array_nb, num_sublayers, num_bytes_constraint_info, ptl_sublayer_level_present_flags;
-      static const uint8_t nalu_header[4] = {0, 0, 0, 1};
-      // skip several fields of VVCDecoderConfigurationRecord
-      // extradata point to 00 after FF, 8b
-      header_data++;
-      // ols_idx, num_sublayers , constant_frame_rate, chroma_format_idc, 16b
-      num_sublayers = ((header_data[0] << 8 | header_data[1]) >> 4) & 0x7;
-      header_data += 2;
-      // bit_depth_minus8, 8b
-      header_data++;
-      // num_bytes_constraint_info, 8b
-      num_bytes_constraint_info = header_data[0] & 0x3f;
-      header_data++;
-      // general_profile_idc, general_tier_flag, 8b
-      // general_level_idc, 8b
-      header_data += 2;
-      // constraint_info, 8b * num_bytes_constraint_info
-      header_data += num_bytes_constraint_info;
-      // ptl_sublayer_level_present_flag, 8b
-      ptl_sublayer_level_present_flags = *header_data++ & 0x3f;
-      for (int i = num_sublayers - 2; i >= 0; i--)
-          if ((ptl_sublayer_level_present_flags >> 1) & 0x1)
-              header_data++;
-      // ptl_num_sub_profiles, 8b
-      // max_picture_width, 16b
-      // max_picture_height, 16b
-      // avg_frame_rate, 16b
-      header_data += 7;
-      // num_of_arrays, 8b
-      array_nb = *header_data++;
+      unsigned int num_sublayers, num_bytes_constraint_info, num_sub_profiles;
 
-      while (array_nb--)
+      // ols_idx 9b, num_sublayers 3b, constant_frame_rate 2b, chroma_format_idc 2b,
+      // bit_depth_minus8 3b + reserved 5b, reserved 2b + num_bytes_constraint_info 6b
+      VVCC_NEED(4);
+      num_sublayers = ((header_data[pos] << 8 | header_data[pos + 1]) >> 4) & 0x7;
+      num_bytes_constraint_info = header_data[pos + 3] & 0x3f;
+      pos += 4;
+      // general_profile_idc + general_tier_flag 8b, general_level_idc 8b,
+      // general_constraint_info 8b * num_bytes_constraint_info
+      VVCC_NEED(2 + num_bytes_constraint_info);
+      pos += 2 + num_bytes_constraint_info;
+      if (num_sublayers > 1)
       {
-        header_data++; // array_completeness
-        header_data += 2; // nal header 0x00 0x01
-        unit_size = header_data[0] << 8 | header_data[1];
-        header_data += 2; // nal unit size
-        char *grown = (char *)realloc(para->hdr_buf.data, data_pos + unit_size + 4);
+        // followed by one sublayer_level_idc byte per set flag. Writers disagree
+        // on bit placement, so count all set bits; more than num_sublayers - 1
+        // means the record is corrupt and is rejected.
+        unsigned int levels = 0;
+        uint8_t flags;
+
+        VVCC_NEED(1);
+        flags = header_data[pos++];
+        for (; flags; flags &= flags - 1)
+          levels++;
+        if (levels > num_sublayers - 1)
+          goto vvcc_invalid;
+        VVCC_NEED(levels);
+        pos += levels;
+      }
+      // ptl_num_sub_profiles 8b, general_sub_profile_idc 32b * ptl_num_sub_profiles
+      VVCC_NEED(1);
+      num_sub_profiles = header_data[pos++];
+      VVCC_NEED(4 * num_sub_profiles);
+      pos += 4 * num_sub_profiles;
+      // max_picture_width 16b, max_picture_height 16b, avg_frame_rate 16b
+      VVCC_NEED(6);
+      pos += 6;
+    }
+
+    // num_of_arrays 8b
+    VVCC_NEED(1);
+    for (unsigned int array_nb = header_data[pos++]; array_nb; array_nb--)
+    {
+      unsigned int nal_unit_type, num_nalus = 1;
+
+      // array_completeness 1b, reserved 2b, NAL_unit_type 5b
+      VVCC_NEED(1);
+      nal_unit_type = header_data[pos++] & 0x1f;
+      // num_nalus 16b, absent for DCI_NUT (13) and OPI_NUT (12)
+      if (nal_unit_type != 12 && nal_unit_type != 13)
+      {
+        VVCC_NEED(2);
+        num_nalus = header_data[pos] << 8 | header_data[pos + 1];
+        pos += 2;
+      }
+
+      for (; num_nalus; num_nalus--)
+      {
+        size_t unit_size;
+        char *grown;
+
+        // nal_unit_length 16b, NAL unit
+        VVCC_NEED(2);
+        unit_size = header_data[pos] << 8 | header_data[pos + 1];
+        pos += 2;
+        VVCC_NEED(unit_size);
+
+        grown = (char *)realloc(para->hdr_buf.data, data_pos + unit_size + 4);
         if (!grown)
         {
           CLog::Log(LOGDEBUG, "[vvc_add_frame_dec_info] NOMEM!");
@@ -1025,28 +1071,35 @@ int vvc_add_frame_dec_info(am_private_t *para)
         }
         para->hdr_buf.data = grown;
         memcpy(para->hdr_buf.data + data_pos, nalu_header, 4);
-        memcpy(para->hdr_buf.data + data_pos + 4, header_data, unit_size);
-        header_data += unit_size;
+        memcpy(para->hdr_buf.data + data_pos + 4, header_data + pos, unit_size);
+        pos += unit_size;
         data_pos += unit_size + 4;
       }
     }
-    else if (header_data[0] == 0x0 && header_data[1] == 0x0 && header_data[2] == 0x1)
+#undef VVCC_NEED
+  }
+  else if (size >= 3 && header_data[0] == 0x0 && header_data[1] == 0x0 && header_data[2] == 0x1)
+  {
+    para->hdr_buf.data = (char *)malloc(size);
+    if (!para->hdr_buf.data)
     {
-      para->hdr_buf.data = (char *)malloc(size);
-      if (!para->hdr_buf.data)
-      {
-        CLog::Log(LOGDEBUG, "[vvc_add_frame_dec_info] NOMEM!");
-        para->hdr_buf.size = 0;
-        return PLAYER_NOMEM;
-      }
-      memcpy(para->hdr_buf.data, header_data, size);
-      data_pos = size;
+      CLog::Log(LOGDEBUG, "[vvc_add_frame_dec_info] NOMEM!");
+      para->hdr_buf.size = 0;
+      return PLAYER_NOMEM;
     }
-
-    para->hdr_buf.size = data_pos;
+    memcpy(para->hdr_buf.data, header_data, size);
+    data_pos = size;
   }
 
+  para->hdr_buf.size = data_pos;
   return PLAYER_SUCCESS;
+
+vvcc_invalid:
+  CLog::Log(LOGERROR, "[vvc_add_frame_dec_info] truncated or invalid vvcC ({} bytes)", size);
+  free(para->hdr_buf.data);
+  para->hdr_buf.data = NULL;
+  para->hdr_buf.size = 0;
+  return PLAYER_FAILED;
 }
 
 int mpeg12_add_frame_dec_info(am_private_t *para)
