@@ -1395,13 +1395,21 @@ int vp9_update_frame_header(am_packet_t *pkt)
 
     for (cur_frame = 0; cur_frame < frame_number; cur_frame++)
     {
-      size[cur_frame] = 0; // or size[0] = bytes_in_buffer - 1; both OK
+      uint32_t fsize = 0;
 
       for (cur_mag = 0; cur_mag < mag; cur_mag++)
       {
-        size[cur_frame] = size[cur_frame]|(buf[mag_ptr] << (cur_mag*8));
+        fsize |= static_cast<uint32_t>(buf[mag_ptr]) << (cur_mag * 8);
         mag_ptr++;
       }
+
+      /* the frames must fit in front of the index, and so must their sum */
+      if (static_cast<int64_t>(total_datasize) + fsize > dsize - index_sz)
+      {
+        CLog::Log(LOGDEBUG, "VP9 superframe index overflow, skip add header");
+        return PLAYER_SUCCESS;
+      }
+      size[cur_frame] = static_cast<int>(fsize);
 
       offset[cur_frame+1] = offset[cur_frame] + size[cur_frame];
 
@@ -1434,6 +1442,12 @@ int vp9_update_frame_header(am_packet_t *pkt)
     if only one frame ,can used headers.
     */
     int need_more = total_datasize + frame_number * 16 - dsize;
+
+    if (need_more < 0)
+    {
+      CLog::Log(LOGDEBUG, "VP9 superframe smaller than packet, skip add header");
+      return PLAYER_SUCCESS;
+    }
 
     av_buffer_unref(&pkt->avpkt.buf);
     ret = av_grow_packet(&(pkt->avpkt), need_more);
