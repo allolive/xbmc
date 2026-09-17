@@ -35,6 +35,11 @@ extern "C"
 
 #define __MODULE_NAME__ "DVDVideoCodecAmlogic"
 
+// about two seconds of one layer at 24 fps (0.8 s at 60 fps) while its
+// partner lags behind. Past that the oldest halves are dropped: memory stays
+// bounded, but a source interleaved worse than this loses frames
+#define MAX_DUAL_LAYER_PACKAGES 48
+
 CAMLVideoBufferPool::~CAMLVideoBufferPool()
 {
   CLog::Log(LOGDEBUG, "CAMLVideoBufferPool::~CAMLVideoBufferPool: Deleting {:d} buffers", static_cast<unsigned int>(m_videoBuffers.size()) );
@@ -416,6 +421,8 @@ bool CDVDVideoCodecAmlogic::Open(CDVDStreamInfo &hints, CDVDCodecOptions &option
   m_processInfo.SetVideoDAR(m_hints.aspect);
 
   m_has_keyframe = false;
+  m_dualLayerPaired = false;
+  m_dualLayerByArrival = false;
 
   if (m_bitstream)
   {
@@ -559,8 +566,38 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: {} package with dts: {:.3f}, pts: {:.3f} and size {} arrived, list {} empty", __FUNCTION__,
           packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, iSize, m_packages.empty() ? "is" : "is not");
 
-        if (!m_packages.empty())
+        // Both layers carry the same container timestamp, and 2 ms is well
+        // under half a frame even at 120 fps without trusting a rate hint
+        const double tolerance = DVD_MSEC_TO_TIME(2);
+        const bool byArrival = m_dualLayerByArrival;
+        auto match = std::find_if(m_packages.begin(), m_packages.end(),
+                                  [&packet, tolerance, byArrival](const DLDemuxPacket& queued)
+                                  {
+                                    if (std::get<2>(queued) == packet.isELPackage)
+                                      return false;
+                                    if (byArrival)
+                                      return true;
+                                    if (std::get<3>(queued) != DVD_NOPTS_VALUE &&
+                                        packet.pts != DVD_NOPTS_VALUE)
+                                      return fabs(std::get<3>(queued) - packet.pts) < tolerance;
+                                    if (std::get<4>(queued) != DVD_NOPTS_VALUE &&
+                                        packet.dts != DVD_NOPTS_VALUE)
+                                      return fabs(std::get<4>(queued) - packet.dts) < tolerance;
+                                    return true;
+                                  });
+
+        if (match != m_packages.end())
         {
+          // both tracks arrive in decode order, so anything queued ahead of
+          // the partner has lost its own
+          while (m_packages.begin() != match)
+          {
+            CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: dropping unpaired {} package with dts: {:.3f}, pts: {:.3f}", __FUNCTION__,
+              std::get<2>(m_packages.front()) ? "EL" : "BL", std::get<4>(m_packages.front())/DVD_TIME_BASE,
+              std::get<3>(m_packages.front())/DVD_TIME_BASE);
+            DropDualLayerFront();
+          }
+
           // convert bl and el package to single package
           DLDemuxPacket dual_layer_packet = m_packages.front();
           uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
@@ -594,14 +631,43 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
               }
             }
           }
+          // only a pair that converted proves the timestamps line up
+          if (dual_layer_converted)
+            m_dualLayerPaired = true;
         }
 
         if (!dual_layer_converted)
         {
           // backup package and don't send to decoder yet
           uint8_t *pDataBackup = static_cast<uint8_t*>(KODI::MEMORY::AlignedMalloc(packet.iSize + AV_INPUT_BUFFER_PADDING_SIZE, 16));
+          if (!pDataBackup)
+          {
+            CLog::Log(LOGERROR, "CDVDVideoCodecAmlogic::{}: failed to allocate {} bytes for dual layer package", __FUNCTION__,
+              packet.iSize);
+            return true;
+          }
           memcpy(pDataBackup, packet.pData, packet.iSize);
-          m_packages.push_back(std::make_tuple(pDataBackup, iSize, packet.isELPackage));
+          m_packages.push_back(std::make_tuple(pDataBackup, iSize, packet.isELPackage, packet.pts, packet.dts));
+
+          while (m_packages.size() > MAX_DUAL_LAYER_PACKAGES)
+            DropDualLayerFront();
+
+          // a full queue holding both layers that never paired means they
+          // carry offset timestamps: pair by arrival as before, from an empty
+          // queue so the stale backlog does not skew every later pair. A queue
+          // of one layer only is a missing partner and keeps waiting for it
+          if (m_packages.size() == MAX_DUAL_LAYER_PACKAGES && !m_dualLayerPaired &&
+              !m_dualLayerByArrival &&
+              std::any_of(m_packages.begin(), m_packages.end(),
+                          [&packet](const DLDemuxPacket& queued)
+                          { return std::get<2>(queued) != packet.isELPackage; }))
+          {
+            CLog::Log(LOGWARNING, "CDVDVideoCodecAmlogic::{}: dual layer timestamps never match, pairing by arrival", __FUNCTION__);
+            m_dualLayerByArrival = true;
+            while (!m_packages.empty())
+              DropDualLayerFront();
+            return true;
+          }
           CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecAmlogic::{}: did add {} package with dts: {:.3f}, pts: {:.3f} and size {} in list", __FUNCTION__,
             packet.isELPackage ? "EL" : "BL", packet.dts/DVD_TIME_BASE, packet.pts/DVD_TIME_BASE, packet.iSize);
 
@@ -622,6 +688,8 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
         CLog::Log(LOGDEBUG, "CDVDVideoCodecAmlogic::{}: waiting for keyframe (bitstream)", __FUNCTION__);
         m_h10p.RollbackAu();
         m_pendingMeta = m_streamMeta;
+        if (dual_layer_converted)
+          DropDualLayerFront();
         return true;
       }
       pData = m_bitstream->GetConvertBuffer();
@@ -676,7 +744,13 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
   }
 
   if (!m_Codec)
+  {
+    // the pair is consumed here, so its queued half must not wait for a
+    // decoder that failed to open
+    if (dual_layer_converted)
+      DropDualLayerFront();
     return true;
+  }
 
   const bool converting = m_h10p.ConvertedThisAu();
   if (packet.pSideData && packet.iSideDataElems > 0 && !converting)
@@ -723,12 +797,7 @@ bool CDVDVideoCodecAmlogic::AddData(const DemuxPacket &packet)
 
   // pop package only from list if hardware decoder did accept the data
   if (data_added && dual_layer_converted)
-  {
-    DLDemuxPacket dual_layer_packet= m_packages.front();
-    uint8_t *pDataBackup = std::get<0>(dual_layer_packet);
-    KODI::MEMORY::AlignedFree(pDataBackup);
-    m_packages.pop_front();
-  }
+    DropDualLayerFront();
 
   if (!data_added && pData)
     m_h10p.RollbackAu();
@@ -760,6 +829,12 @@ double CDVDVideoCodecAmlogic::RenderDisplayLatency()
   return DVD_MSEC_TO_TIME(latencyTweak + static_cast<double>(gfx.GetDisplayLatency()) -
                           videoDelay -
                           static_cast<double>(winSystem->GetFrameLatencyAdjustment()));
+}
+
+void CDVDVideoCodecAmlogic::DropDualLayerFront()
+{
+  KODI::MEMORY::AlignedFree(std::get<0>(m_packages.front()));
+  m_packages.pop_front();
 }
 
 // publishes every committed value whose frame the renderer has scheduled

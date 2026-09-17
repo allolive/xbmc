@@ -27,7 +27,8 @@ class CBitstreamConverter;
 
 class CDVDVideoCodecAmlogic;
 
-typedef std::tuple<uint8_t*, uint32_t, bool> DLDemuxPacket;
+// data, size, is enhancement layer, pts, dts
+typedef std::tuple<uint8_t*, uint32_t, bool, double, double> DLDemuxPacket;
 
 class CAMLVideoBuffer : public CVideoBuffer
 {
@@ -86,6 +87,7 @@ public:
 protected:
   void            Close(void);
   void            DrainMetadataToClock();
+  void            DropDualLayerFront();
   double          RenderDisplayLatency();
   void            FrameRateTracking(uint8_t *pData, int iSize, double dts, double pts);
   //void            RemoveInfo(CDVDAmlogicInfo* info);
@@ -116,6 +118,8 @@ private:
   static std::atomic<bool> m_InstanceGuard;
 
   std::list<DLDemuxPacket> m_packages;
+  bool m_dualLayerPaired{false};
+  bool m_dualLayerByArrival{false};
 
   uint32_t m_metadataToken{0};
   bool m_metaLeadLogged{false};
