@@ -766,49 +766,82 @@ bool CBitstreamConverter::Convert(uint8_t* pData, int iSize)
     {
       if (m_to_annexb)
       {
-        int nal_stream_pos = 0;
+        const size_t size = iSize > 0 ? static_cast<size_t>(iSize) : 0;
+        size_t pos = 0;
+        bool start_decode = false;
 
         m_inputSize = iSize;
         m_inputBuffer = pData;
 
-        if (!m_start_decode)
+        if (!m_start_decode && size >= 4)
         {
-          uint32_t packet_format = AV_RB32(m_inputBuffer);
+          uint32_t packet_format = AV_RB32(pData);
           m_convert_bytestream = packet_format != 0x1 && packet_format != 0x100;
         }
 
-        while (nal_stream_pos < iSize)
+        if (m_convert_bytestream)
         {
-          if (m_convert_bytestream)
+          // rewrite a copy: the decoder may hand the same demuxer packet back
+          // in when its buffer is full, and it must still be length-prefixed
+          m_convertBuffer =
+              static_cast<uint8_t*>(av_malloc(size + AV_INPUT_BUFFER_PADDING_SIZE));
+          if (!m_convertBuffer)
+            return false;
+          memcpy(m_convertBuffer, pData, size);
+          memset(m_convertBuffer + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+
+          while (size - pos >= 4)
           {
             static const uint8_t nalu_header[4] = {0, 0, 0, 1};
-            uint32_t unit_size = AV_RB32(m_inputBuffer + nal_stream_pos) + 4;
-            uint16_t unit_type = (AV_RB16(m_inputBuffer + nal_stream_pos + 4) >> 3) & 0x1f;
+            const uint32_t nal_size = AV_RB32(m_convertBuffer + pos);
 
-            if (unit_type == VVC_SPS_NUT || IsIDR(unit_type))
-              m_start_decode = true;
+            if (nal_size > size - pos - 4)
+              break;
 
-            memcpy(m_inputBuffer + nal_stream_pos, nalu_header, 4);
-            nal_stream_pos += unit_size;
+            if (nal_size >= 2)
+            {
+              uint16_t unit_type = (AV_RB16(m_convertBuffer + pos + 4) >> 3) & 0x1f;
+              if (unit_type == VVC_SPS_NUT || IsIDR(unit_type))
+                start_decode = true;
+            }
+
+            memcpy(m_convertBuffer + pos, nalu_header, 4);
+            pos += 4 + nal_size;
           }
-          else if (!m_start_decode)
+
+          if (pos != size)
           {
-            uint8_t* buf = m_inputBuffer + nal_stream_pos;
+            av_free(m_convertBuffer);
+            m_convertBuffer = NULL;
+            m_convertSize = 0;
+            CLog::Log(LOGDEBUG, LOGVIDEO,
+                      "CBitstreamConverter::Convert: invalid VVC NAL length at {} of {}", pos,
+                      size);
+            return false;
+          }
+
+          m_convertSize = static_cast<int>(size);
+          if (start_decode)
+            m_start_decode = true;
+        }
+        else
+        {
+          while (!m_start_decode && size - pos >= 5)
+          {
+            const uint8_t* buf = pData + pos;
 
             if (buf[0] == 0x0 && buf[1] == 0x0 && buf[2] == 0x1)
             {
-              uint16_t unit_type = (AV_RB16(m_inputBuffer + nal_stream_pos + 3) >> 3) & 0x1f;
+              uint16_t unit_type = (AV_RB16(buf + 3) >> 3) & 0x1f;
 
               if (unit_type == VVC_SPS_NUT || IsIDR(unit_type))
                 m_start_decode = true;
 
-              nal_stream_pos += 5;
+              pos += 5;
             }
             else
-              nal_stream_pos++;
+              pos++;
           }
-          else
-            break;
         }
       }
       return true;
